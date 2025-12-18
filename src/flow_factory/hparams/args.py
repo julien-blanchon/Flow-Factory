@@ -17,13 +17,17 @@ from .reward_args import RewardArguments
 @dataclass
 class Arguments:
     """Main arguments class encapsulating all configurations."""
-    launcher : Literal['accelerate', 'torchrun'] = field(
+    launcher : Literal['accelerate'] = field(
         default='accelerate',
         metadata={"help": "Distributed launcher to use."},
     )
     config_path: str | None = field(
         default=None,
         metadata={"help": "Path to distributed configuration file (e.g., deepspeed config)."},
+    )
+    num_processes : int = field(
+        default=4,
+        metadata={"help": "Number of processes for distributed training."},
     )
     data_args: DataArguments = field(
         default_factory=DataArguments,
@@ -48,21 +52,20 @@ class Arguments:
 
     @classmethod
     def from_dict(cls, args_dict: dict[str, Any]) -> Arguments:
-        """
-        Create Arguments instance from dictionary.
-        This is a Factory Method.
-        """
-        data_args = DataArguments(**args_dict.get('data', {}))
-        model_args = ModelArguments(**args_dict.get('model', {}))
-        training_args = TrainingArguments(**args_dict.get('train', {}))
-        reward_args = RewardArguments(**args_dict.get('reward', {}))
+        """Create Arguments instance from dictionary."""
+        # Extract nested configs
+        nested_args = {
+            'data_args': DataArguments(**args_dict.get('data', {})),
+            'model_args': ModelArguments(**args_dict.get('model', {})),
+            'training_args': TrainingArguments(**args_dict.get('train', {})),
+            'reward_args': RewardArguments(**args_dict.get('reward', {})),
+        }
         
-        return cls(
-            data_args=data_args,
-            model_args=model_args,
-            training_args=training_args,
-            reward_args=reward_args,
-        )
+        # Extract top-level configs (exclude nested keys)
+        top_level_keys = {'launcher', 'config_path', 'num_processes'}
+        top_level_args = {k: v for k, v in args_dict.items() if k in top_level_keys}
+        
+        return cls(**top_level_args, **nested_args)
 
     @classmethod
     def load_from_yaml(cls, yaml_file: str) -> Arguments:

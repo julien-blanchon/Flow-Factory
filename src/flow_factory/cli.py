@@ -26,17 +26,12 @@ def parse_args():
         epilog="""
 Examples:
   # Basic training (Auto-detects launcher from config)
-  flow-factory-train --config config/flux_grpo.yaml
-  
-  # Override launcher to run strictly locally
-  # (Requires env config support or manual override logic)
-  flow-factory-train --config config/flux_grpo.yaml
-        """
+    flow-factory-train config/flux_grpo.yaml
+"""
     )
     parser.add_argument(
-        "--config",
+        "config",
         type=str,
-        required=True,
         help="Path to YAML configuration file"
     )
     # Allows parsing known args and ignoring the rest (handled by accelerate if needed)
@@ -49,25 +44,16 @@ def run_distributed_supervisor(config, args: List[str]):
     logger.info(f"🚀 [Flow-Factory Supervisor] Launching distributed training with mode: {config.launcher.upper()}")
     
     cmd = []
+    print(config)
 
     # --- 1. Infrastructure Layer ---
     if config.launcher == "accelerate":
         cmd.extend(["accelerate", "launch"])
         
-        # Distributed Config (e.g., deepspeed_stage2.yaml)
-        if config.distributed_config_path:
-            cmd.extend(["--config_file", config.distributed_config_path])
-        
-        # Process Count Override
-        if config.num_processes > 1:
-            cmd.extend(["--num_processes", str(config.num_processes)])
-            
-        # Add any other accelerate flags here if needed (e.g. main_process_port)
-            
-    elif config.launcher == "torchrun":
-        cmd.extend(["torchrun"])
-        cmd.extend(["--nproc_per_node", str(config.num_processes)])
-        # Torchrun usually handles master_addr/port automatically in simple setups
+        if config.config_path is not None:
+            cmd.extend(["--config_file", config.config_path])
+    
+        cmd.extend(["--num_processes", str(config.num_processes)])
 
     # --- 2. Application Layer ---
     # We call the exact same script entry point (e.g., 'flow-factory-train')
@@ -109,16 +95,9 @@ def train_cli():
     # 2. Check Distributed Context
     # Accelerate/Torchrun set these variables. If they exist, we are a worker.
     # LOCAL_RANK is the most reliable indicator for Accelerate/Torchrun.
-    is_worker = os.environ.get("LOCAL_RANK") is not None
 
     # Default to 'process' if env_args is missing or not set
-    launcher_type = config.launcher
-
-    # 3. Decision Logic
-    if not is_worker and launcher_type != "process":
-        # We are the User, and we want Distributed Training -> Start Supervisor
-        # We pass sys.argv[1:] to forward --config, --resume, etc.
-        run_distributed_supervisor(config, sys.argv[1:])
+    run_distributed_supervisor(config, sys.argv[1:])
 
 if __name__ == "__main__":
     train_cli()
