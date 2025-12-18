@@ -7,8 +7,6 @@ import torch
 import torch.distributed as dist
 
 
-from ..rewards.pick_score import PickScoreRewardModel
-
 logger = getLogger(__name__)
 
 def get_world_size() -> int:
@@ -59,7 +57,7 @@ class RewardArguments:
 
         # Parse reward model name/path
         reward_model_mapping = {
-            'PickScore': PickScoreRewardModel,
+            # 'PickScore': 'flow_factory.rewards.pick_score.PickScoreRewardModel',
         }
         if self.reward_model in reward_model_mapping:
             self.reward_model_cls = reward_model_mapping[self.reward_model]

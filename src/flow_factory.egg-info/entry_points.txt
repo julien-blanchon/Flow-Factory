@@ -1,0 +1,3 @@
+[console_scripts]
+flow-factory-eval = flow_factory.cli:eval_cli
+flow-factory-train = flow_factory.cli:train_cli

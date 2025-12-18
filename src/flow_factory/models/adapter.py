@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, List, Union
 import torch
 import torch.nn as nn
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from PIL import Image
 from diffusers.utils.outputs import BaseOutput
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -28,7 +28,7 @@ class BaseSample(BaseOutput):
     prompt_embeds : Optional[torch.FloatTensor] = None
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     log_probs : Optional[torch.FloatTensor] = None
-    extra_kwargs : Dict[str, Any] = {}
+    extra_kwargs : Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseAdapter(nn.Module, ABC):

@@ -100,6 +100,11 @@ class BaseTrainer(ABC):
         self._init_reward_model()
 
     @abstractmethod
+    def run(self):
+        """Main training loop."""
+        pass
+
+    @abstractmethod
     def compute_loss(self):
         """Main training loop."""
         pass

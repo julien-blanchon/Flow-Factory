@@ -1,0 +1,72 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flow-factory"
+version = "0.1.0"
+description = "Unified RL Fine-tuning Framework for Diffusion Models"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+keywords = ["diffusion", "reinforcement-learning", "grpo", "flux", "stable-diffusion"]
+authors = [
+    {name = "Flow-Factory Team"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "diffusers>=0.28.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
+    "datasets>=2.14.0",
+    "pyyaml>=6.0",
+    "pillow>=9.0.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+]
+reward = [
+    "ImageReward>=1.0.0",
+]
+
+[project.scripts]
+flow-factory-train = "flow_factory.cli:train_cli"
+flow-factory-eval = "flow_factory.cli:eval_cli"
+
+[project.urls]
+Homepage = "https://github.com/your-org/flow-factory"
+Documentation = "https://github.com/your-org/flow-factory/docs"
+Repository = "https://github.com/your-org/flow-factory"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310']
+
+[tool.isort]
+profile = "black"
+line_length = 100
