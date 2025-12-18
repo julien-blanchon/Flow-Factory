@@ -161,7 +161,7 @@ class Flux1Adapter(BaseAdapter):
         
         # Prepare latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
-        latents, image_ids = self.pipeline.prepare_latents(
+        latents, latent_image_ids = self.pipeline.prepare_latents(
             batch_size = batch_size,
             num_channels_latents = num_channels_latents,
             height = height,
