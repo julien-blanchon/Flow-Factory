@@ -10,6 +10,7 @@ import subprocess
 import logging
 from typing import List
 
+import torch
 from .hparams.args import Arguments
 from .trainers.loader import load_trainer
 from .models.loader import load_model
@@ -37,67 +38,35 @@ Examples:
     # Allows parsing known args and ignoring the rest (handled by accelerate if needed)
     return parser.parse_known_args()
 
-def run_distributed_supervisor(config, args: List[str]):
-    """
-    The 'Supervisor': Constructs the infrastructure command and replaces the current process.
-    """
-    logger.info(f"🚀 [Flow-Factory Supervisor] Launching distributed training with mode: {config.launcher.upper()}")
-    
-    cmd = []
-
-    # --- 1. Infrastructure Layer ---
-    if config.launcher == "accelerate":
-        cmd.extend(["accelerate", "launch"])
-        
-        if config.config_file is not None:
-            cmd.extend(["--config_file", config.config_file])
-
-        cmd.extend(["--main_process_port", str(config.main_process_port)])    
-        cmd.extend(["--num_processes", str(config.num_processes)])
-
-    # --- 2. Application Layer ---
-    # We call the exact same script entry point (e.g., 'flow-factory-train')
-    # sys.argv[0] is the path to the script being executed
-    cmd.append(sys.argv[0])
-    
-    # --- 3. Argument Layer ---
-    # Pass through all original CLI arguments (e.g., --config x.yaml --debug)
-    cmd.extend(args)
-    
-    logger.info(f"Executing Infrastructure Command: {' '.join(cmd)}")
-    
-    # Flush standard streams to prevent log interleaving
-    sys.stdout.flush()
-    sys.stderr.flush()
-    
-    # --- 4. Handoff ---
-    # os.execvp replaces the current process image with the new command.
-    # It does not return. Signals (Ctrl+C) are handled by the new process.
-    try:
-        os.execvp(cmd[0], cmd)
-    except FileNotFoundError:
-        logger.error(f"❌ Could not find executable: {cmd[0]}. Is 'accelerate' installed?")
-        sys.exit(1)
+def run_training_logic(config):
+    """The actual heavy lifting. Only called when ready to train."""
+    from .trainers.loader import load_trainer
+    trainer = load_trainer(config)
+    trainer.run()
 
 def train_cli():
-    """Train command entry point."""
-    args, unknown = parse_args()
+    # 1. Load config
+    args, unknown = parse_args() # Your existing parser
+    config = Arguments.load_from_yaml(args.config)
+
+    # 2. Determine if we need to launch the infrastructure
+    # LLaMA-Factory logic: If GPUs > 1 and we aren't already a worker, launch torchrun/accelerate
+    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    is_distributed = os.environ.get("RANK") is not None
     
-    # 1. Load Configuration (Lightweight)
-    # We load this to check the 'env' settings
-    logger.info(f"Loading configuration from: {args.config}")
-    try:
-        config = Arguments.load_from_yaml(args.config)
-    except Exception as e:
-        logger.error(f"Failed to load configuration file: {e}")
-        sys.exit(1)
-
-    # 2. Check Distributed Context
-    # Accelerate/Torchrun set these variables. If they exist, we are a worker.
-    # LOCAL_RANK is the most reliable indicator for Accelerate/Torchrun.
-
-    # Default to 'process' if env_args is missing or not set
-    run_distributed_supervisor(config, sys.argv[1:])
+    if gpu_count > 1 and not is_distributed:
+        logger.info("🚀 Launching distributed infrastructure...")
+        subprocess.run([
+            "accelerate", "launch",
+            "--num_processes", str(gpu_count),
+            "--main_process_port", config.main_process_port
+            sys.argv[0],  # Call this same script
+            *sys.argv[1:] # Pass the same config and args
+        ])
+    else:
+        # 3. Direct path: We are either on 1 GPU or already inside a worker
+        logger.info("✅ Starting training execution...")
+        run_training_logic(config)
 
 if __name__ == "__main__":
     train_cli()

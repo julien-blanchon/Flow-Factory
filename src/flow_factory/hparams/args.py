@@ -25,10 +25,6 @@ class Arguments:
         default=None,
         metadata={"help": "Path to distributed configuration file (e.g., deepspeed config)."},
     )
-    num_processes : int = field(
-        default=4,
-        metadata={"help": "Number of processes for distributed training."},
-    )
     main_process_port : int = field(
         default=29500,
         metadata={"help": "Main process port for distributed training."},
