@@ -21,7 +21,7 @@ class Arguments:
         default='accelerate',
         metadata={"help": "Distributed launcher to use."},
     )
-    config_path: str | None = field(
+    config_file: str | None = field(
         default=None,
         metadata={"help": "Path to distributed configuration file (e.g., deepspeed config)."},
     )

@@ -49,8 +49,8 @@ def run_distributed_supervisor(config, args: List[str]):
     if config.launcher == "accelerate":
         cmd.extend(["accelerate", "launch"])
         
-        if config.config_path is not None:
-            cmd.extend(["--config_file", config.config_path])
+        if config.config_file is not None:
+            cmd.extend(["--config_file", config.config_file])
     
         cmd.extend(["--num_processes", str(config.num_processes)])
 
