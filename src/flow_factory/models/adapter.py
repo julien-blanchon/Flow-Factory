@@ -52,14 +52,10 @@ class BaseAdapter(nn.Module, ABC):
     def eval(self):
         """Set model to evaluation mode."""
         super().eval()
-        if self.pipeline is not None:
-            self.pipeline.eval()
 
     def train(self, mode: bool = True):
         """Set model to training mode."""
         super().train(mode)
-        if self.pipeline is not None:
-            self.pipeline.train()
 
     @property
     def default_lora_target_modules(self) -> List[str]:

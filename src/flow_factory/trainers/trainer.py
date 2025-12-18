@@ -35,12 +35,16 @@ class BaseTrainer(ABC):
         self.adapter = adapter
 
         self._initialization()
+
+    @property
+    def unwrapped_adapter(self) -> BaseAdapter:
+        return self.accelerator.unwrap_model(self.adapter)
     
-    @abstractmethod
     def _init_reward_model(self) -> BaseRewardModel:
-        """Initialize reward model."""
-        self.reward_model : BaseRewardModel
-        pass
+        """Initialize reward model from configuration."""
+        reward_model_cls = self.reward_args.reward_model_cls
+        self.reward_model = reward_model_cls(self.reward_args)
+        return self.reward_model
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
         # Move text-encoder & vae to GPU for dataloader encoding

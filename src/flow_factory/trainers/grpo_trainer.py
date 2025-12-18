@@ -21,12 +21,6 @@ class GRPOTrainer(BaseTrainer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def _init_reward_model(self) -> BaseRewardModel:
-        """Initialize reward model from configuration."""
-        reward_model_cls = self.reward_args.reward_model_cls
-        self.reward_model = reward_model_cls(self.reward_args)
-        return self.reward_model
-
     def run(self):
         """Main training loop."""
         epoch = 0

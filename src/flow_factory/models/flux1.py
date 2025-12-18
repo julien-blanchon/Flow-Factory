@@ -1,9 +1,11 @@
 # src/flow_factory/models/flux.py
+from __future__ import annotations
 from typing import Union, List, Dict, Any, Optional
 from dataclasses import dataclass
 import torch
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
+import logging
 
 from ..hparams import ModelArguments, TrainingArguments
 from .adapter import BaseAdapter, BaseSample
@@ -293,6 +295,16 @@ class Flux1Adapter(BaseAdapter):
         return output
 
     # ======================== Utilities ========================
+
+    def train(self, mode: bool = True) -> "Flux1Adapter":
+        super().train(mode)
+        self.pipeline.transformer.train(mode)
+        return self
+
+    def eval(self):
+        """Set model to evaluation mode."""
+        super().eval()
+        self.pipeline.transformer.eval()
 
     @property
     def default_lora_target_modules(self) -> List[str]:
