@@ -30,13 +30,15 @@ class GRPOTrainer(BaseTrainer):
         epoch = 0
         while True:
             # Save checkpoint
-            if (self.training_args.save_freq > 0 and epoch % self.training_args.save_freq == 0 and self.accelerator.is_main_process):
+            if (self.accelerator.is_main_process and 
+                self.training_args.save_freq > 0 and epoch % self.training_args.save_freq == 0
+                and self.training_args.save_dir
+                ):
                 save_path = os.path.join(self.training_args.save_dir, self.training_args.run_name, f"epoch_{epoch}")
                 self.save_checkpoint(save_path)
 
             # Evaluation
-            if (self.training_args.eval_args.eval_freq > 0 and 
-                epoch % self.training_args.eval_args.eval_freq == 0):
+            if (self.training_args.eval_args.eval_freq > 0 and epoch % self.training_args.eval_args.eval_freq == 0):
                 self.evaluate()
             
             # Sample rollouts

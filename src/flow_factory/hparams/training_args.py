@@ -183,9 +183,9 @@ class TrainingArguments:
         metadata={"help": "Model saving frequency (in epochs). 0 for no saving."},
     )
 
-    save_dir: str = field(
-        default="logs",
-        metadata={"help": "Directory to save logs and checkpoints."},
+    save_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Directory to save logs and checkpoints. None for no saving."},
     )
 
     run_name : str = field(

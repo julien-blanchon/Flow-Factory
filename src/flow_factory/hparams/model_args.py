@@ -55,11 +55,6 @@ class ModelArguments:
         metadata={"help": "Alpha scaling factor for LoRA adapters."},
     )
 
-    save_path: Optional[str] = field(
-        default=None,
-        metadata={"help": "Path to save the model checkpoints."},
-    )
-
     def __post_init__(self):
         pass
 
