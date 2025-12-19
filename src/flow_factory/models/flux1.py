@@ -1,5 +1,7 @@
 # src/flow_factory/models/flux.py
 from __future__ import annotations
+
+import os
 from typing import Union, List, Dict, Any, Optional
 from dataclasses import dataclass
 import torch
@@ -154,21 +156,21 @@ class Flux1Adapter(BaseAdapter):
             prompt_embeds = encoded['prompt_embeds']
             pooled_prompt_embeds = encoded['pooled_prompt_embeds']
             prompt_ids = encoded['prompt_ids']
-            text_ids = encoded['text_ids']
         else:
             prompt_embeds = prompt_embeds.to(device)
             pooled_prompt_embeds = pooled_prompt_embeds.to(device)
-            text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
-                device=device, dtype=prompt_embeds.dtype
-            )
+
+        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
+            device=device, dtype=prompt_embeds.dtype
+        )
         
         # Prepare latents
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
         latents, latent_image_ids = self.pipeline.prepare_latents(
-            batch_size = batch_size,
-            num_channels_latents = num_channels_latents,
-            height = height,
-            width = width,
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
             dtype=dtype,
             device=device,
             generator=generator,
@@ -235,6 +237,7 @@ class Flux1Adapter(BaseAdapter):
                 image=images[b],
                 prompt_embeds=prompt_embeds[b],
                 pooled_prompt_embeds=pooled_prompt_embeds[b],
+                image_ids=latent_image_ids,
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_probs else None,
             )
             for b in range(batch_size)
@@ -252,7 +255,6 @@ class Flux1Adapter(BaseAdapter):
         **kwargs,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Compute log-probabilities for training."""
-        self.on_load_transformer()
         
         batch_size = len(samples)
         device = self.device
@@ -264,8 +266,8 @@ class Flux1Adapter(BaseAdapter):
         
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
         pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
-        text_ids = torch.stack([s.extra_kwargs['text_ids'] for s in samples], dim=0).to(device)
-        latent_image_ids = torch.stack([s.extra_kwargs['latent_image_ids'] for s in samples], dim=0).to(device)
+        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device)
+        latent_image_ids = samples[0].image_ids.to(device) # No batch dimension needed
         
         # Set scheduler timesteps
         _ = set_scheduler_timesteps(
@@ -297,7 +299,6 @@ class Flux1Adapter(BaseAdapter):
             sde_type=self.training_args.sde_type,
         )
         
-        self.off_load_transformer()
         return output
 
     # ======================== Utilities ========================
@@ -358,7 +359,13 @@ class Flux1Adapter(BaseAdapter):
     
     def save_checkpoint(self, path: str):
         """Save checkpoint."""
-        torch.save(self.pipeline.transformer.state_dict(), path)
+        file_path = os.path.join(path, "diffusion_pytorch_model.bin")
+        
+        # It's better to get the state_dict from the unwrapped model if using LoRA/Accelerate
+        state_dict = self.pipeline.transformer.state_dict()
+        
+        torch.save(state_dict, file_path)
+        print(f"Checkpoint saved to {file_path}")
 
     @property
     def device(self) -> torch.device:

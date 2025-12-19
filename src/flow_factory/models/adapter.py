@@ -28,6 +28,8 @@ class BaseSample(BaseOutput):
     prompt_embeds : Optional[torch.FloatTensor] = None
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     log_probs : Optional[torch.FloatTensor] = None
+    text_ids : Optional[torch.Tensor] = None
+    image_ids : Optional[torch.Tensor] = None
     extra_kwargs : Dict[str, Any] = field(default_factory=dict)
 
 

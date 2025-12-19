@@ -120,7 +120,11 @@ class BaseTrainer(ABC):
 
     def save_checkpoint(self, path: str):
         """Save trainer state to a specific path."""
-        os.makedirs(path, exist_ok=True)
+        if self.accelerator.is_main_process:
+            os.makedirs(path, exist_ok=True)
+        # Wait for the directory to be created across all processes if necessary
+        self.accelerator.wait_for_everyone()
+        # The adapter now saves a file INSIDE this directory
         self.adapter.save_checkpoint(path)
 
     def load_checkpoint(self, path: str):

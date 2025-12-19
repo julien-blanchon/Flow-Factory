@@ -77,3 +77,11 @@ class Arguments:
             args_dict = yaml.safe_load(f)
         
         return cls.from_dict(args_dict)
+    
+    def __str__(self) -> str:
+        """Pretty print configuration as YAML."""
+        return yaml.dump(self.to_dict(), default_flow_style=False, sort_keys=False, indent=2)
+    
+    def __repr__(self) -> str:
+        """Same as __str__ for consistency."""
+        return self.__str__()

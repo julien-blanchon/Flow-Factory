@@ -7,7 +7,7 @@ import os
 from accelerate import Accelerator
 from accelerate.utils import set_seed, ProjectConfiguration
 from typing import Literal
-from logging import getLogger
+import logging
 
 from ..models.loader import load_model
 from .trainer import BaseTrainer
@@ -15,7 +15,8 @@ from .grpo_trainer import GRPOTrainer
 from ..hparams import *
 
 
-logger = getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def load_trainer(

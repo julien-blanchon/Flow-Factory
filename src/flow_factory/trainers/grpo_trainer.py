@@ -3,6 +3,7 @@
 Group Relative Policy Optimization (GRPO) Trainer.
 Implements GRPO algorithm for flow matching models.
 """
+import os
 from typing import List
 from functools import partial
 import numpy as np
@@ -28,6 +29,11 @@ class GRPOTrainer(BaseTrainer):
         """Main training loop."""
         epoch = 0
         while True:
+            # Save checkpoint
+            if (self.training_args.save_freq > 0 and epoch % self.training_args.save_freq == 0 and self.accelerator.is_main_process):
+                save_path = os.path.join(self.training_args.save_dir, self.training_args.run_name, f"epoch_{epoch}")
+                self.save_checkpoint(save_path)
+
             # Evaluation
             if (self.training_args.eval_args.eval_freq > 0 and 
                 epoch % self.training_args.eval_args.eval_freq == 0):
@@ -38,13 +44,6 @@ class GRPOTrainer(BaseTrainer):
             
             # Compute loss and update
             self.compute_loss(samples)
-            
-            # Save checkpoint
-            if (self.training_args.save_freq > 0 and 
-                epoch % self.training_args.save_freq == 0 and
-                self.accelerator.is_main_process):
-                save_path = f"{self.training_args.save_dir}/{self.training_args.run_name}/epoch_{epoch}"
-                self.save_checkpoint(save_path)
             
             epoch += 1
 
@@ -100,7 +99,7 @@ class GRPOTrainer(BaseTrainer):
             
             reward_output = self.reward_model(**batch_samples)
             rewards.append(
-                torch.tensor(
+                torch.as_tensor(
                     reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
                     device=self.accelerator.device,
                     dtype=torch.float32
@@ -117,7 +116,8 @@ class GRPOTrainer(BaseTrainer):
         """
         # Compute rewards
         rewards = self.compute_rewards(samples)
-        prompt_ids = torch.cat([sample.prompt_ids for sample in samples], dim=0)
+        prompt_ids = torch.stack([sample.prompt_ids for sample in samples], dim=0)
+        prompt_ids = torch.as_tensor(prompt_ids, device=self.accelerator.device)
 
         # Gather across processes
         gathered_prompt_ids = self.accelerator.gather(prompt_ids).cpu().numpy()
@@ -146,7 +146,7 @@ class GRPOTrainer(BaseTrainer):
             advantages[mask] = (group_rewards - mean) / std
 
         # Convert back to tensor and split by process
-        advantages = torch.tensor(advantages).reshape(
+        advantages = torch.as_tensor(advantages).reshape(
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
 
@@ -183,7 +183,7 @@ class GRPOTrainer(BaseTrainer):
                     )
 
                     # Forward pass to get new log probs
-                    output = self.adapter.forward(batch_samples, return_log_prob=True)
+                    output = self.adapter.forward(batch_samples, timestep_index=timestep_index, return_log_prob=True)
 
                     # Clip advantages
                     adv_clip_range = self.training_args.adv_clip_range         
@@ -218,14 +218,18 @@ class GRPOTrainer(BaseTrainer):
         self.adapter.eval()
         all_samples = []
         
-        for batch in self.test_dataloader:
+        for batch in tqdm(
+            self.test_dataloader,
+            desc='Evaluating',
+            disable=not self.accelerator.is_local_main_process,
+        ):
             with torch.no_grad():
                 samples = self.adapter.inference(**batch, compute_log_probs=False)
             all_samples.extend(samples)
         
         # Compute rewards
-        rewards = self.compute_rewards(all_samples).cpu().numpy()
-        gathered_rewards = self.accelerator.gather(torch.tensor(rewards)).cpu().numpy()
+        rewards = self.compute_rewards(all_samples)
+        gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
         
         # Log statistics
         if self.accelerator.is_main_process:

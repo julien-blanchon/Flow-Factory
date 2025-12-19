@@ -1,72 +1,67 @@
-# src/flow_factory/cli.py
-"""
-Command-line interface for Flow-Factory.
-Acts as both the Supervisor (launcher) and the Worker (trainer).
-"""
+# flow_factory/cli.py
 import sys
 import os
-import argparse
 import subprocess
+import argparse
 import logging
-from typing import List
-
 import torch
-from .hparams.args import Arguments
-from .trainers.loader import load_trainer
-from .models.loader import load_model
 
-# Configure basic logging for the CLI wrapper
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+def get_gpu_count():
+    """Detect available GPU count using torch."""
+    try:
+        return torch.cuda.device_count()
+    except (ImportError, RuntimeError):
+        return 0
+
+
 def parse_args():
-    """Parses command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Flow-Factory Training",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Basic training (Auto-detects launcher from config)
-    flow-factory-train config/flux_grpo.yaml
-"""
-    )
-    parser.add_argument(
-        "config",
-        type=str,
-        help="Path to YAML configuration file"
-    )
-    # Allows parsing known args and ignoring the rest (handled by accelerate if needed)
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Flow-Factory Launcher")
+    parser.add_argument("config", type=str, help="Path to YAML config")
+    parser.add_argument("--num_processes", type=int, default=None, 
+                        help="Number of processes (default: auto-detect from GPUs)")
+    parser.add_argument("--main_process_port", type=str, default="29500",
+                        help="Port for distributed communication")
     return parser.parse_known_args()
 
-def run_training_logic(config):
-    """The actual heavy lifting. Only called when ready to train."""
-    from .trainers.loader import load_trainer
-    trainer = load_trainer(config)
-    trainer.run()
 
 def train_cli():
-    # 1. Load config
-    args, unknown = parse_args() # Your existing parser
-    config = Arguments.load_from_yaml(args.config)
-
-    # 2. Determine if we need to launch the infrastructure
-    # LLaMA-Factory logic: If GPUs > 1 and we aren't already a worker, launch torchrun/accelerate
-    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    is_distributed = os.environ.get("RANK") is not None
+    args, unknown = parse_args()
     
-    if gpu_count > 1 and not is_distributed:
-        logger.info("🚀 Launching distributed infrastructure...")
-        subprocess.run([
-            "accelerate", "launch",
-            "--num_processes", str(gpu_count),
-            "--main_process_port", str(config.main_process_port),
-            sys.argv[0],  # Call this same script
-            *sys.argv[1:] # Pass the same config and args
-        ])
+    # Determine process count
+    gpu_count = get_gpu_count()
+    num_procs = args.num_processes or max(1, gpu_count)
+    
+    # Warn if requested processes exceed available GPUs
+    if args.num_processes and args.num_processes > gpu_count > 0:
+        logger.warning(
+            f"Requested {args.num_processes} processes but only {gpu_count} GPUs available. "
+            f"This may cause resource contention."
+        )
+    
+    logger.info(f"Launching with {num_procs} processes on {gpu_count} available GPUs")
+    
+    # Single process or already in distributed context
+    if os.environ.get("RANK") is not None or num_procs <= 1:
+        cmd = [sys.executable, "-m", "flow_factory.train", *sys.argv[1:]]
+        logger.info(f"Direct launch: {' '.join(cmd)}")
     else:
-        # 3. Direct path: We are either on 1 GPU or already inside a worker
-        logger.info("✅ Starting training execution...")
-        run_training_logic(config)
+        # Multi-process launch via accelerate
+        cmd = [
+            "accelerate", "launch",
+            "--num_processes", str(num_procs),
+            "--main_process_port", args.main_process_port,
+            "-m", "flow_factory.train",
+            *sys.argv[1:]
+        ]
+        logger.info(f"Accelerate launch: {' '.join(cmd[:6])}...")
+    
+    subprocess.run(cmd, check=True)
+
 
 if __name__ == "__main__":
     train_cli()

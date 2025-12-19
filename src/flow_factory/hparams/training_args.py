@@ -3,15 +3,27 @@ import math
 from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from typing import Any, List, Literal, Union, Optional, Tuple, Dict
-from logging import getLogger
+import logging
 import torch.distributed as dist
 from datetime import datetime
 
-logger = getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 def get_world_size() -> int:
-    if dist.is_initialized():
-        return dist.get_world_size()
+    # Standard PyTorch/Accelerate/DDP variable
+    if "WORLD_SIZE" in os.environ:
+        return int(os.environ["WORLD_SIZE"])
+    
+    # OpenMPI / Horovod
+    if "OMPI_COMM_WORLD_SIZE" in os.environ:
+        return int(os.environ["OMPI_COMM_WORLD_SIZE"])
+    
+    # Intel MPI / Slurm (sometimes)
+    if "PMI_SIZE" in os.environ:
+        return int(os.environ["PMI_SIZE"])
+    
     return 1
 
 @dataclass
@@ -76,6 +88,8 @@ class TrainingArguments:
         default=2,
         metadata={"help": "Number of gradient steps per epoch."},
     )
+    num_batches_per_epoch : int = field(init=False)
+    gradient_accumulation_steps : int = field(init=False)
 
     # PPO/GRPO Clip arguments
     trainer_type: Literal["grpo"] = field(
@@ -186,6 +200,7 @@ class TrainingArguments:
 
     def __post_init__(self):
         world_size = get_world_size()
+        logger.info("World Size:" + str(world_size))
 
         if self.noise_steps is None:
             self.noise_steps = list(range(self.num_timesteps // 2))

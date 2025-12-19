@@ -1,7 +1,6 @@
 # Environment Configuration
-launcher: "accelerate"  # Options: accelerate, torchrun
+launcher: "accelerate"  # Options: accelerate
 config_file: config/accelerate_configs/deepspeed_zero2.yaml  # Path to distributed config file (optional)
-main_process_port: 29501
 
 # Data Configuration
 data:
@@ -26,7 +25,7 @@ train:
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
   global_std: true  # Use global std for advantage normalization
-  unique_sample_num_per_epoch: 8  # Unique samples per group
+  unique_sample_num_per_epoch: 4  # Unique samples per group
   gradient_step_per_epoch: 2  # Gradient steps per epoch
   
   # Clipping
@@ -61,8 +60,8 @@ train:
     per_device_batch_size: 1  # Eval batch size
     seed: null  # Eval seed (defaults to training seed)
     guidance_scale: 3.5  # Guidance scale for sampling
-    num_timesteps: 30  # Number of eval timesteps
-    eval_freq: 10  # Eval frequency in epochs (0 to disable)
+    num_timesteps: 20  # Number of eval timesteps
+    eval_freq: 0  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
 reward:
