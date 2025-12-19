@@ -31,7 +31,7 @@ class Flux1Adapter(BaseAdapter):
         # Load pipeline
         self.pipeline = FluxPipeline.from_pretrained(
             self.model_args.model_name_or_path,
-            torch_dtype=torch.float16 if self.training_args.mixed_precision == "fp16" else torch.bfloat16,
+            low_cpu_mem_usage=False
         )
         
         # Initialize Scheduler

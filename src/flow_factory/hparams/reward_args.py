@@ -1,6 +1,7 @@
 # src/flow_factory/hparams/reward_args.py
 import os
 import math
+import yaml
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Optional, Type
 import logging
@@ -11,20 +12,6 @@ from ..rewards.registry import get_reward_model_class
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
 logger = logging.getLogger(__name__)
 
-def get_world_size() -> int:
-    # Standard PyTorch/Accelerate/DDP variable
-    if "WORLD_SIZE" in os.environ:
-        return int(os.environ["WORLD_SIZE"])
-    
-    # OpenMPI / Horovod
-    if "OMPI_COMM_WORLD_SIZE" in os.environ:
-        return int(os.environ["OMPI_COMM_WORLD_SIZE"])
-    
-    # Intel MPI / Slurm (sometimes)
-    if "PMI_SIZE" in os.environ:
-        return int(os.environ["PMI_SIZE"])
-    
-    return 1
 
 @dataclass
 class RewardArguments:
@@ -80,3 +67,11 @@ class RewardArguments:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def __str__(self) -> str:
+        """Pretty print configuration as YAML."""
+        return yaml.dump(self.to_dict(), default_flow_style=False, sort_keys=False, indent=2)
+    
+    def __repr__(self) -> str:
+        """Same as __str__ for consistency."""
+        return self.__str__()

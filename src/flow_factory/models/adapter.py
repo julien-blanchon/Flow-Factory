@@ -42,6 +42,13 @@ class BaseSample(BaseOutput):
     image_ids : Optional[torch.Tensor] = None
     extra_kwargs : Dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict for memory tracking, excluding non-tensor fields."""
+        return {
+            k: v for k, v in self.__dict__.items()
+            if isinstance(v, torch.Tensor)
+        }
+
 
 class BaseAdapter(nn.Module, ABC):
     """
@@ -115,7 +122,7 @@ class BaseAdapter(nn.Module, ABC):
         # Move model back to target device
         self.on_load_transformer()
 
-    def save_checkpoint(self, path: str, transformer_override=None, max_shard_size: str = "5GB"):
+    def save_checkpoint(self, path: str, transformer_override=None, max_shard_size: str = "5GB", dtype : Union[torch.dtype, str] = torch.bfloat16):
         """
         Saves the transformer checkpoint using safetensors. 
         Supports sharding for full-parameter tuning and native PEFT saving for LoRA.
@@ -123,12 +130,22 @@ class BaseAdapter(nn.Module, ABC):
         model_to_save = transformer_override if transformer_override is not None else self.transformer
         os.makedirs(path, exist_ok=True)
 
+        if isinstance(dtype, str):
+            if dtype.lower() == 'bfloat16':
+                dtype = torch.bfloat16
+            elif dtype.lower() == 'float16':
+                dtype = torch.float16
+            elif dtype.lower() == 'float32':
+                dtype = torch.float32
+            else:
+                raise ValueError(f"Unsupported dtype string: {dtype}")
+
         if self.model_args.finetune_type == 'lora' and isinstance(model_to_save, PeftModel):
             logger.info(f"Saving LoRA adapter safetensors to {path}")
             self.transformer.save_pretrained(path)
         else:
             logger.info(f"Preparing to save full-parameter shards to {path} (Max shard size: {max_shard_size})")
-            model_to_save.save_pretrained(path, max_shard_size=max_shard_size)
+            model_to_save.to(dtype).save_pretrained(path, max_shard_size=max_shard_size)
 
         logger.info(f"Model shards saved successfully to {path}")
     

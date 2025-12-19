@@ -33,6 +33,7 @@ class GRPOTrainer(BaseTrainer):
         """Main training loop."""
         while True:
             self.adapter.scheduler.set_seed(self.epoch + self.training_args.seed)
+            
             # Save checkpoint
             if (
                 self.training_args.save_freq > 0 and 
@@ -47,14 +48,22 @@ class GRPOTrainer(BaseTrainer):
                 self.evaluate()
             
             self.memory_profiler.snapshot(f"before_epoch_{self.epoch}_sampling")
-            # Sample rollouts
             samples = self.sample()
             self.memory_profiler.snapshot(f"after_epoch_{self.epoch}_sampling")
             
+            # Track samples memory
+            self.memory_profiler.track_samples(
+                [s.to_dict() for s in samples], 
+                stage=f"epoch_{self.epoch}_samples"
+            )
+            
             self.memory_profiler.snapshot(f"before_epoch_{self.epoch}_training")
-            # Compute loss and update
             self.compute_loss(samples)
             self.memory_profiler.snapshot(f"after_epoch_{self.epoch}_training")
+            
+            # Print detailed report every epoch
+            if self.epoch % 5 == 0:
+                self.memory_profiler.print_full_report(stage=f"epoch_{self.epoch}")
             
             self.epoch += 1
 
@@ -70,8 +79,23 @@ class GRPOTrainer(BaseTrainer):
             disable=not self.accelerator.is_local_main_process,
         ):
             batch = next(data_iter)
+            
+            # Track input batch
+            self.memory_profiler.track_tensors(
+                batch, 
+                stage=f"epoch_{self.epoch}_batch_{batch_index}_input"
+            )
+            
             with torch.no_grad():
-                sample_batch = self.adapter.inference(**batch, compute_log_probs=True, **kwargs)
+                with self.accelerator.autocast():
+                    sample_batch = self.adapter.inference(**batch, compute_log_probs=True, **kwargs)
+            
+            # Track output samples
+            self.memory_profiler.track_samples(
+                [s.to_dict() for s in sample_batch],
+                stage=f"epoch_{self.epoch}_batch_{batch_index}_output"
+            )
+            
             samples.extend(sample_batch)
 
         return samples
@@ -80,7 +104,6 @@ class GRPOTrainer(BaseTrainer):
         """Compute rewards using the reward model."""
         rewards = []
         
-        # Extract fields needed by reward model
         signature = inspect.signature(self.reward_model.__call__)
         reward_params = list(signature.parameters.keys())
         
@@ -89,7 +112,6 @@ class GRPOTrainer(BaseTrainer):
             if k in samples[0].keys() and k != 'self'
         ]
         
-        # Batch inference
         for i in tqdm(
             range(0, len(samples), self.reward_args.batch_size),
             desc=f'Epoch {self.epoch} Computing Rewards',
@@ -100,7 +122,6 @@ class GRPOTrainer(BaseTrainer):
                 for sample in samples[i:i + self.reward_args.batch_size]
             ]
             
-            # Stack tensors, keep lists as lists
             batch_samples = {
                 key: (torch.stack([sample[key] for sample in batch_samples], dim=0)
                       if isinstance(batch_samples[0][key], torch.Tensor)
@@ -108,16 +129,35 @@ class GRPOTrainer(BaseTrainer):
                 for key in filtered_key_fields
             }
             
-            reward_output = self.reward_model(**batch_samples)
-            rewards.append(
-                torch.as_tensor(
-                    reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
-                    device=self.accelerator.device,
-                    dtype=torch.float32
-                )
+            # Track reward input batch
+            self.memory_profiler.track_tensors(
+                batch_samples,
+                stage=f"epoch_{self.epoch}_reward_batch_{i//self.reward_args.batch_size}"
             )
+            
+            reward_output = self.reward_model(**batch_samples)
+            reward_tensor = torch.as_tensor(
+                reward_output.rewards if hasattr(reward_output, 'rewards') else reward_output,
+                device=self.accelerator.device,
+                dtype=torch.float32
+            )
+            
+            # Track reward output
+            self.memory_profiler.track_tensors(
+                {'rewards': reward_tensor},
+                stage=f"epoch_{self.epoch}_reward_output_{i//self.reward_args.batch_size}"
+            )
+            
+            rewards.append(reward_tensor)
 
         rewards = torch.cat(rewards, dim=0)
+        
+        # Track final rewards
+        self.memory_profiler.track_tensors(
+            {'rewards_final': rewards},
+            stage=f"epoch_{self.epoch}_rewards"
+        )
+        
         return rewards
 
     def print_memory_breakdown(self):
@@ -134,14 +174,12 @@ class GRPOTrainer(BaseTrainer):
         
         total_mem = 0
         
-        # 1. Model Weights
         for name, module in components.items():
             if module is None: continue
             mem_params = sum(p.nelement() * p.element_size() for p in module.parameters())
             mem_buffers = sum(b.nelement() * b.element_size() for b in module.buffers())
             total_mb = (mem_params + mem_buffers) / 1024**2
             
-            # Check residency
             is_on_gpu = False
             try:
                 if len(list(module.parameters())) > 0:
@@ -152,7 +190,6 @@ class GRPOTrainer(BaseTrainer):
             logger.info(f"{name:<15}: {total_mb:>8.2f} MB {status}")
             if is_on_gpu: total_mem += total_mb
 
-        # 2. Optimizer State (The Missing Metric)
         opt_mem = 0
         if hasattr(self, 'optimizer') and self.optimizer is not None:
             for state in self.optimizer.state.values():
@@ -171,28 +208,30 @@ class GRPOTrainer(BaseTrainer):
         logger.info("=" * 40)
 
     def compute_loss(self, samples: List[BaseSample]) -> None:
-        """
-        Main training loop: compute advantages and update policy.
-        Implements GRPO algorithm with group-based normalization.
-        """
+        """Main training loop: compute advantages and update policy."""
+        
         # Compute rewards
         rewards = self.compute_rewards(samples)
         prompt_ids = torch.stack([sample.prompt_ids for sample in samples], dim=0)
         prompt_ids = torch.as_tensor(prompt_ids, device=self.accelerator.device)
 
+        # Track rewards and prompt_ids
+        self.memory_profiler.track_tensors(
+            {'rewards': rewards, 'prompt_ids': prompt_ids},
+            stage=f"epoch_{self.epoch}_compute_loss_inputs"
+        )
+
         # Gather across processes
         gathered_prompt_ids = self.accelerator.gather(prompt_ids).cpu().numpy()
         gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
 
-        # Compute advantages using GRPO (group-based normalization)
+        # Compute advantages
         _, group_indices = np.unique(gathered_prompt_ids, axis=0, return_inverse=True)
         advantages = np.zeros_like(gathered_rewards, dtype=np.float64)
 
-        # Global std if specified
         if self.training_args.global_std:
             std = np.std(gathered_rewards, axis=0, keepdims=True) + 1e-8
 
-        # Normalize per group
         for group_id in np.unique(group_indices):
             mask = (group_indices == group_id)
             group_rewards = gathered_rewards[mask]
@@ -206,23 +245,21 @@ class GRPOTrainer(BaseTrainer):
             
             advantages[mask] = (group_rewards - mean) / std
 
-        # Convert back to tensor and split by process
         advantages = torch.as_tensor(advantages).reshape(
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
 
+        # Track advantages
+        self.memory_profiler.track_tensors(
+            {'advantages': advantages},
+            stage=f"epoch_{self.epoch}_advantages"
+        )
+
         # Training loop
         self.adapter.train()
-        # Print component devices and dtypes
-        print("Adapter component devices and dtypes:")
-        print(f"Transformer  Device: {self.adapter.pipeline.transformer.device}, Dtype: {self.adapter.pipeline.transformer.dtype}")
-        print(f"Vae         Device: {self.adapter.pipeline.vae.device}, Dtype: {self.adapter.pipeline.vae.dtype}")
-        print(f"Text_encoder Device: {self.adapter.pipeline.text_encoder.device}, Dtype: {self.adapter.pipeline.text_encoder.dtype}")
-        print(f"Text_encoder_2 Device: {self.adapter.pipeline.text_encoder_2.device}, Dtype: {self.adapter.pipeline.text_encoder_2.dtype}")
         self.print_memory_breakdown()
 
         with self.accelerator.accumulate(self.adapter):
-            # Batch samples
             batched_samples = [
                 samples[i:i + self.training_args.per_device_batch_size]
                 for i in range(0, len(samples), self.training_args.per_device_batch_size)
@@ -231,28 +268,53 @@ class GRPOTrainer(BaseTrainer):
                 -1, self.training_args.per_device_batch_size
             )
 
-            for batch_samples, batch_advantages in tqdm(
+            for batch_idx, (batch_samples, batch_advantages) in enumerate(tqdm(
                 zip(batched_samples, batched_advantages),
                 total=len(batched_samples),
                 desc=f'Epoch {self.epoch} Training',
                 position=0,
                 disable=not self.accelerator.is_local_main_process,
-            ):
-                for timestep_index in tqdm(
+            )):
+                # Track batch advantages
+                self.memory_profiler.track_tensors(
+                    {'batch_advantages': batch_advantages},
+                    stage=f"epoch_{self.epoch}_batch_{batch_idx}"
+                )
+                
+                for timestep_idx, timestep_index in enumerate(tqdm(
                     self.adapter.scheduler.current_noise_steps,
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                     leave=False,
                     disable=not self.accelerator.is_local_main_process,
-                ):
+                )):
                     # Get old log probs
                     old_log_probs = torch.stack(
                         [sample.log_probs[timestep_index] for sample in batch_samples],
                         dim=0
                     )
+                    
+                    # Track old log probs
+                    self.memory_profiler.track_tensors(
+                        {'old_log_probs': old_log_probs},
+                        stage=f"epoch_{self.epoch}_batch_{batch_idx}_timestep_{timestep_idx}"
+                    )
 
-                    # Forward pass to get new log probs
-                    output = self.adapter.forward(batch_samples, timestep_index=timestep_index, return_log_prob=True)
+                    # Forward pass
+                    output = self.adapter.forward(
+                        batch_samples, 
+                        timestep_index=timestep_index, 
+                        return_log_prob=True
+                    )
+                    
+                    # Track forward output
+                    self.memory_profiler.track_tensors(
+                        {
+                            'new_log_probs': output.log_prob,
+                            'prev_sample': output.prev_sample
+                        },
+                        stage=f"epoch_{self.epoch}_batch_{batch_idx}_timestep_{timestep_idx}_output"
+                    )
 
                     # Clip advantages
                     adv_clip_range = self.training_args.adv_clip_range         
@@ -260,12 +322,22 @@ class GRPOTrainer(BaseTrainer):
 
                     # PPO-style clipped loss
                     ratio = torch.exp(output.log_prob - old_log_probs)
-                    
                     ratio_clip_range = self.training_args.clip_range
 
                     unclipped_loss = -batch_advantages * ratio
                     clipped_loss = -batch_advantages * torch.clamp(ratio, ratio_clip_range[0], ratio_clip_range[1])
                     policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
+                    
+                    # Track loss components
+                    self.memory_profiler.track_tensors(
+                        {
+                            'ratio': ratio,
+                            'unclipped_loss': unclipped_loss,
+                            'clipped_loss': clipped_loss,
+                            'policy_loss': policy_loss
+                        },
+                        stage=f"epoch_{self.epoch}_batch_{batch_idx}_timestep_{timestep_idx}_loss"
+                    )
 
                     # Backward and step
                     self.accelerator.backward(policy_loss)
@@ -278,6 +350,12 @@ class GRPOTrainer(BaseTrainer):
                     
                     self.optimizer.step()
                     self.optimizer.zero_grad()
+                    
+                # Snapshot after each batch
+                if batch_idx % 10 == 0:
+                    self.memory_profiler.snapshot(
+                        f"epoch_{self.epoch}_after_batch_{batch_idx}"
+                    )
 
     def evaluate(self) -> None:
         """Evaluation loop."""

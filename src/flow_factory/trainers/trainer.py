@@ -18,7 +18,6 @@ from ..rewards.reward_model import BaseRewardModel
 
 from ..utils.memory_tracker import MemoryProfiler
 
-
 class BaseTrainer(ABC):
     """
     Abstract Base Class for Flow-Factory trainers.
@@ -72,7 +71,6 @@ class BaseTrainer(ABC):
             # Offload text-encoder after dataloader encoding
             if self.accelerator.is_local_main_process:
                 self.adapter.off_load_text_encoder()
-                torch.cuda.empty_cache()
 
         return dataloader, test_dataloader
     
@@ -89,8 +87,11 @@ class BaseTrainer(ABC):
 
     def _initialization(self):
         # Init dataloader and optimizer
-        self.memory_profiler.snapshot("before_optimizer_init")
+        self.memory_profiler.snapshot("before_init")
+        self.adapter.on_load(self.accelerator.device)
+        self.memory_profiler.snapshot("before_dataloader_init")
         self.dataloader, self.test_dataloader = self._init_dataloader()
+        self.memory_profiler.snapshot("before_optimizer_init")
         self.optimizer = self._init_optimizer()
         self.memory_profiler.track_optimizer(self.optimizer)
         self.memory_profiler.snapshot("after_optimizer_init")
