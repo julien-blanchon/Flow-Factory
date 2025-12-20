@@ -43,7 +43,7 @@ def load_trainer(
     accelerator = Accelerator(
         mixed_precision=config.training_args.mixed_precision,
         project_config=accelerator_config,
-        gradient_accumulation_steps=config.training_args.gradient_accumulation_steps * config.training_args.num_timesteps,
+        gradient_accumulation_steps=config.training_args.gradient_accumulation_steps,
     )
     set_seed(config.training_args.seed)
 

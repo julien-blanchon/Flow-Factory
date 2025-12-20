@@ -156,30 +156,30 @@ class GRPOTrainer(BaseTrainer):
         # Training loop
         self.adapter.train()
 
-        with self.accelerator.accumulate(self.adapter):
-            batched_samples = [
-                samples[i:i + self.training_args.per_device_batch_size]
-                for i in range(0, len(samples), self.training_args.per_device_batch_size)
-            ]
-            batched_advantages = advantages.reshape(
-                -1, self.training_args.per_device_batch_size
-            )
+        batched_samples = [
+            samples[i:i + self.training_args.per_device_batch_size]
+            for i in range(0, len(samples), self.training_args.per_device_batch_size)
+        ]
+        batched_advantages = advantages.reshape(
+            -1, self.training_args.per_device_batch_size
+        )
 
-            for batch_idx, (batch_samples, batch_advantages) in enumerate(tqdm(
-                zip(batched_samples, batched_advantages),
-                total=len(batched_samples),
-                desc=f'Epoch {self.epoch} Training',
-                position=0,
+        for batch_idx, (batch_samples, batch_advantages) in enumerate(tqdm(
+            zip(batched_samples, batched_advantages),
+            total=len(batched_samples),
+            desc=f'Epoch {self.epoch} Training',
+            position=0,
+            disable=not self.accelerator.is_local_main_process,
+        )):
+            num_timesteps = self.adapter.scheduler.current_noise_steps
+            for timestep_idx, timestep_index in enumerate(tqdm(
+                self.adapter.scheduler.current_noise_steps,
+                desc=f'Epoch {self.epoch} Timestep',
+                position=1,
+                leave=False,
                 disable=not self.accelerator.is_local_main_process,
             )):
-                
-                for timestep_idx, timestep_index in enumerate(tqdm(
-                    self.adapter.scheduler.current_noise_steps,
-                    desc=f'Epoch {self.epoch} Timestep',
-                    position=1,
-                    leave=False,
-                    disable=not self.accelerator.is_local_main_process,
-                )):
+                with self.accelerator.accumulate(self.adapter.transformer):
                     # Get old log probs
                     old_log_probs = torch.stack(
                         [sample.log_probs[timestep_index] for sample in batch_samples],
@@ -206,17 +206,22 @@ class GRPOTrainer(BaseTrainer):
                     clipped_loss = -batch_advantages * torch.clamp(ratio, ratio_clip_range[0], ratio_clip_range[1])
                     policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
-                    # Backward and step
-                    self.accelerator.backward(policy_loss)
-                    
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
-                            self.adapter.get_trainable_parameters(),
-                            self.training_args.max_grad_norm,
-                        )
-                    
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                    loss = policy_loss / num_timesteps # Normalize by timesteps.
+                    # Other normalization strategies:
+                    # 1. Temp-FlowGRPO
+                    # 2. GRPO-Guard
+
+                    # Backward
+                    self.accelerator.backward(loss)
+                
+                if self.accelerator.sync_gradients:
+                    self.accelerator.clip_grad_norm_(
+                        self.adapter.get_trainable_parameters(),
+                        self.training_args.max_grad_norm,
+                    )
+                
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
     def evaluate(self) -> None:
         """Evaluation loop."""
