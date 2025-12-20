@@ -39,6 +39,10 @@ class Arguments(ArgABC):
         default=None,
         metadata={"help": "Name of the training run. Defaults to a timestamp."},
     )
+    project : str = field(
+        default='Flow-Factory',
+        metadata={"help": "Project name for logging platforms."},
+    )
     data_args: DataArguments = field(
         default_factory=DataArguments,
         metadata={"help": "Arguments for data configuration."},

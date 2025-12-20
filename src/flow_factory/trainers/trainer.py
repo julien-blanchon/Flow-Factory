@@ -12,13 +12,10 @@ from diffusers.utils.outputs import BaseOutput
 from accelerate import Accelerator
 from accelerate.utils import set_seed, ProjectConfiguration
 
-
 from ..hparams import *
 from ..models.adapter import BaseAdapter
 from ..data_utils.loader import get_dataloader
 from ..rewards.reward_model import BaseRewardModel
-
-from ..utils.memory_tracker import MemoryProfiler
 
 class BaseTrainer(ABC):
     """

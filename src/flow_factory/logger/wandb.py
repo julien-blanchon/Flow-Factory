@@ -1,27 +1,24 @@
 # src/flow_factory/logger/wandb.py
-from abc import ABC, abstractmethod
-from typing import List, Union, Any, Optional, Dict
-
-from ..hparams import *
-from ..models.adapter import BaseSample
+from typing import Any, Dict
+import wandb
 from .abc import Logger
+from .formatting import LogImage, LogVideo
 
 class WandbLogger(Logger):
-    def __init__(self, config : Arguments):
-        """Initialize the logger with an optional run name."""
-        self.config = config
-
     def _init_platform(self):
-        import wandb
+        wandb.init(
+            project=self.config.project,
+            name=self.config.run_name,
+            config=self.config.to_dict()
+        )
         self.platform = wandb
 
-    def resume_from(self):
-        pass
+    def _convert_to_platform(self, value: Any) -> Any:
+        if isinstance(value, LogImage):
+            return wandb.Image(value.value, caption=value.caption)
+        elif isinstance(value, LogVideo):
+            return wandb.Video(value.value, caption=value.caption)
+        return value
 
-    def log_data(
-        self,
-        samples: Union[Dict, BaseSample],
-        step: int,
-        keys: Optional[str] = None,
-    ):
-        pass
+    def _log_impl(self, data: Dict, step: int):
+        self.platform.log(data, step=step)
