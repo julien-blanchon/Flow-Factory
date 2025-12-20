@@ -1,7 +1,6 @@
 import math
 import torch
 from torch.utils.data import Sampler, Dataset, DataLoader
-from collections import Counter
 import logging
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')

@@ -50,7 +50,7 @@ train:
   num_timesteps: 10  # Number of SDE timesteps
   noise_level: 0.7  # Noise level for sampling
   num_noise_steps: 1  # Number of noise steps
-  noise_steps: [1, 2, 3]  # Custom noise window (auto: first half of timesteps)
+  noise_steps: [1]  # Custom noise window
   
   # Optimization
   seed: 42  # Random seed
@@ -59,6 +59,10 @@ train:
   adam_beta1: 0.9  # AdamW beta1
   adam_beta2: 0.999  # AdamW beta2
   adam_epsilon: 1.0e-8  # AdamW epsilon
+
+  # EMA
+  ema_decay: 0.995  # EMA decay rate (0 to disable)
+  ema_update_interval: 10  # EMA update interval (in epochs)
   
   # Evaluation settings
   eval_args:

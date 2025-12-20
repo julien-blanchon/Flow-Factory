@@ -4,6 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, List, Union, Literal
 from dataclasses import dataclass, field, asdict
+from contextlib import contextmanager, nullcontext
 import logging
 
 import torch
@@ -16,6 +17,7 @@ from diffusers.models.modeling_utils import ModelMixin
 from peft import get_peft_model, LoraConfig, PeftModel
 
 
+from ..ema import EMAModuleWrapper
 from ..scheduler.flow_matching import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
 from ..hparams import *
 
@@ -80,10 +82,11 @@ class BaseAdapter(nn.Module, ABC):
         self._mix_precision()
         self._set_trainable_params_dtype()
 
+        self._init_ema()
+
         # Enable gradient checkpointing if needed
         if self.training_args.enable_gradient_checkpointing:
             self.enable_gradient_checkpointing()
-        
 
     @abstractmethod
     def load_pipeline(self) -> DiffusionPipeline:
@@ -122,18 +125,38 @@ class BaseAdapter(nn.Module, ABC):
         if len(encoders) == 0:
             raise ValueError("No text encoder found in the pipeline.")
         return encoders[0]
+    
+    @text_encoder.setter
+    def text_encoder(self, module: torch.nn.Module):
+        encoders = self.text_encoders
+        if len(encoders) == 0:
+            raise ValueError("No text encoder found in the pipeline.")
+        first_encoder_name = [name for name, _ in vars(self.pipeline).items() if 'text_encoder' in name][0]
+        setattr(self.pipeline, first_encoder_name, module)
 
     @property
     def vae(self) -> torch.nn.Module:
         return self.pipeline.vae
     
+    @vae.setter
+    def vae(self, module: torch.nn.Module):
+        self.pipeline.vae = module
+    
     @property
     def transformer(self) -> torch.nn.Module:
         return self.pipeline.transformer
+    
+    @transformer.setter
+    def transformer(self, module: torch.nn.Module):
+        self.pipeline.transformer = module
 
     @property
     def scheduler(self) -> FlowMatchEulerDiscreteSDEScheduler:
         return self.pipeline.scheduler
+
+    @scheduler.setter
+    def scheduler(self, scheduler: FlowMatchEulerDiscreteSDEScheduler):
+        self.pipeline.scheduler = scheduler
 
     @property
     def device(self) -> torch.device:
@@ -182,6 +205,32 @@ class BaseAdapter(nn.Module, ABC):
         elif self.training_args.mixed_precision == "bf16":
             return torch.bfloat16
         return torch.float32
+    
+    def _init_ema(self):
+        """Initialize EMA wrapper for the transformer."""
+        if self.training_args.ema_decay > 0:
+            self.ema_wrapper = EMAModuleWrapper(
+                parameters=self.get_trainable_parameters(target_module='transformer'),
+                decay=self.training_args.ema_decay,
+                update_step_interval=self.training_args.ema_update_step_interval,
+                device=self.device,
+            )
+        else:
+            self.ema_wrapper = None
+    
+    def ema_step(self, step : int):
+        """Update EMA parameters."""
+        if hasattr(self, 'ema_wrapper') and self.ema_wrapper is not None:
+            self.ema_wrapper.step(self.get_trainable_parameters(target_module='transformer'), optimization_step=step)
+
+
+    @contextmanager
+    def use_ema_parameters(self):
+        if hasattr(self, 'ema_wrapper') and self.ema_wrapper is not None:
+            with self.ema_wrapper.use_ema_parameters(self.get_trainable_parameters(target_module='transformer')):
+                yield
+        else:
+            yield
 
     def _mix_precision(self):
         """Apply mixed precision to all components."""
@@ -220,9 +269,9 @@ class BaseAdapter(nn.Module, ABC):
             init_lora_weights="gaussian",
             target_modules=self.default_target_modules,
         )
-        self.pipeline.transformer = get_peft_model(self.pipeline.transformer, lora_config)
+        self.transformer = get_peft_model(self.transformer, lora_config)
         
-        return self.pipeline.transformer
+        return self.transformer
 
 
     def load_checkpoint(self, path: str):
@@ -247,32 +296,42 @@ class BaseAdapter(nn.Module, ABC):
         # Move model back to target device
         self.on_load_transformer()
 
-    def save_checkpoint(self, path: str, transformer_override=None, max_shard_size: str = "5GB", dtype : Union[torch.dtype, str] = torch.bfloat16):
+    def save_checkpoint(
+            self,
+            path: str,
+            transformer_override=None,
+            max_shard_size: str = "5GB",
+            dtype : Union[torch.dtype, str] = torch.bfloat16,
+            save_ema: bool = True,
+        ):
         """
         Saves the transformer checkpoint using safetensors. 
         Supports sharding for full-parameter tuning and native PEFT saving for LoRA.
         """
-        model_to_save = transformer_override if transformer_override is not None else self.transformer
-        os.makedirs(path, exist_ok=True)
+        save_context = nullcontext if not save_ema else self.use_ema_parameters
 
-        if isinstance(dtype, str):
-            if dtype.lower() == 'bfloat16':
-                dtype = torch.bfloat16
-            elif dtype.lower() == 'float16':
-                dtype = torch.float16
-            elif dtype.lower() == 'float32':
-                dtype = torch.float32
+        with save_context():
+            model_to_save = transformer_override if transformer_override is not None else self.transformer
+            os.makedirs(path, exist_ok=True)
+
+            if isinstance(dtype, str):
+                if dtype.lower() == 'bfloat16':
+                    dtype = torch.bfloat16
+                elif dtype.lower() == 'float16':
+                    dtype = torch.float16
+                elif dtype.lower() == 'float32':
+                    dtype = torch.float32
+                else:
+                    raise ValueError(f"Unsupported dtype string: {dtype}")
+
+            if self.model_args.finetune_type == 'lora' and isinstance(model_to_save, PeftModel):
+                logger.info(f"Saving LoRA adapter safetensors to {path}")
+                self.transformer.save_pretrained(path)
             else:
-                raise ValueError(f"Unsupported dtype string: {dtype}")
+                logger.info(f"Preparing to save full-parameter shards to {path} (Max shard size: {max_shard_size})")
+                model_to_save.to(dtype).save_pretrained(path, max_shard_size=max_shard_size)
 
-        if self.model_args.finetune_type == 'lora' and isinstance(model_to_save, PeftModel):
-            logger.info(f"Saving LoRA adapter safetensors to {path}")
-            self.transformer.save_pretrained(path)
-        else:
-            logger.info(f"Preparing to save full-parameter shards to {path} (Max shard size: {max_shard_size})")
-            model_to_save.to(dtype).save_pretrained(path, max_shard_size=max_shard_size)
-
-        logger.info(f"Model shards saved successfully to {path}")
+            logger.info(f"Model shards saved successfully to {path}")
 
     def _freeze_text_encoders(self):
         """Freeze all text encoders."""

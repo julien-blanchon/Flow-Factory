@@ -178,6 +178,17 @@ class TrainingArguments:
         metadata={"help": "Whether to enable gradient checkpointing."},
     )
 
+    # EMA arguments
+    ema_decay: float = field(
+        default=0.995,
+        metadata={"help": "Decay for EMA model. Set to 0 to disable EMA."},
+    )
+
+    ema_update_step_interval: int = field(
+        default=10,
+        metadata={"help": "Update EMA every N steps."},
+    )
+
     # Precision arguments
     mixed_precision: Literal["no", "fp16", "bf16"] = field(
         default="bf16",
@@ -189,13 +200,13 @@ class TrainingArguments:
         metadata={"help": "Model saving frequency (in epochs). 0 for no saving."},
     )
 
-    save_dir: Optional[str] = field(
-        default=None,
+    save_dir: str = field(
+        default='save',
         metadata={"help": "Directory to save logs and checkpoints. None for no saving."},
     )
 
     # Nested evaluation arguments
-    eval_args: Union[dict, EvaluationArguments] = field(
+    eval_args: EvaluationArguments = field(
         default_factory=EvaluationArguments,
         metadata={"help": "Evaluation arguments."},
     )

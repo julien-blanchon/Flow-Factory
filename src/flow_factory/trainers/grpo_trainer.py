@@ -41,7 +41,7 @@ class GRPOTrainer(BaseTrainer):
                 self.epoch % self.training_args.save_freq == 0 and 
                 self.training_args.save_dir
             ):
-                save_path = os.path.join(self.training_args.save_dir, self.training_args.run_name, f"epoch_{self.epoch}")
+                save_path = os.path.join(self.training_args.save_dir, self.config.run_name, f"epoch_{self.epoch}")
                 self.save_checkpoint(save_path)
 
             # Evaluation
@@ -51,6 +51,8 @@ class GRPOTrainer(BaseTrainer):
             samples = self.sample()
             
             self.compute_loss(samples)
+
+            self.adapter.ema_step(step=self.epoch)
 
             self.epoch += 1
 
@@ -67,8 +69,7 @@ class GRPOTrainer(BaseTrainer):
         ):
             batch = next(data_iter)
             
-            with torch.no_grad():
-                with self.autocast():
+            with torch.no_grad(), self.autocast():
                     sample_batch = self.adapter.inference(**batch, compute_log_probs=True, **kwargs)
             
             samples.extend(sample_batch)
@@ -206,7 +207,7 @@ class GRPOTrainer(BaseTrainer):
                         clipped_loss = -batch_advantages * torch.clamp(ratio, ratio_clip_range[0], ratio_clip_range[1])
                         policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
-                        loss = policy_loss / num_timesteps # Normalize by timesteps.
+                        loss = policy_loss
                         # Other normalization strategies:
                         # 1. Temp-FlowGRPO
                         # 2. GRPO-Guard
@@ -229,25 +230,26 @@ class GRPOTrainer(BaseTrainer):
             return
         
         self.adapter.eval()
-        all_samples = []
-        
-        for batch in tqdm(
-            self.test_dataloader,
-            desc='Evaluating',
-            disable=not self.accelerator.is_local_main_process,
-        ):
-            generator = create_generator(batch['prompt'], self.training_args.seed)
-            with torch.no_grad():
-                with self.autocast():
-                    samples = self.adapter.inference(**batch, generator=generator, compute_log_probs=False)
-            all_samples.extend(samples)
-        
-        # Compute rewards
-        rewards = self.compute_rewards(all_samples)
-        gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
-        
-        # Log statistics
-        if self.accelerator.is_main_process:
-            avg_reward = np.mean(gathered_rewards)
-            std_reward = np.std(gathered_rewards)
-            print(f"Evaluation - Avg Reward: {avg_reward:.4f}, Std Reward: {std_reward:.4f}")
+
+        with self.adapter.use_ema_parameters():
+            all_samples = []
+            
+            for batch in tqdm(
+                self.test_dataloader,
+                desc='Evaluating',
+                disable=not self.accelerator.is_local_main_process,
+            ):
+                generator = create_generator(batch['prompt'], self.training_args.seed)
+                with torch.no_grad(), self.autocast():
+                        samples = self.adapter.inference(**batch, generator=generator, compute_log_probs=False)
+                all_samples.extend(samples)
+            
+            # Compute rewards
+            rewards = self.compute_rewards(all_samples)
+            gathered_rewards = self.accelerator.gather(rewards).cpu().numpy()
+            
+            # Log statistics
+            if self.accelerator.is_main_process:
+                avg_reward = np.mean(gathered_rewards)
+                std_reward = np.std(gathered_rewards)
+                print(f"Evaluation - Avg Reward: {avg_reward:.4f}, Std Reward: {std_reward:.4f}")
