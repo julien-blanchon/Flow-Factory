@@ -50,24 +50,13 @@ class GRPOTrainer(BaseTrainer):
             
             samples = self.sample()
             
-            # Track samples memory
-            self.memory_profiler.track_samples(
-                [s.to_dict() for s in samples], 
-                stage=f"epoch_{self.epoch}_samples"
-            )
-            
             self.compute_loss(samples)
-            
-            # Print detailed report every epoch
-            if self.epoch % 5 == 0:
-                self.memory_profiler.print_full_report(stage=f"epoch_{self.epoch}")
-            
+
             self.epoch += 1
 
     def sample(self, **kwargs) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
-        self.adapter.transformer.train()
-        self.adapter.scheduler.train()
+        self.adapter.train()
         samples = []
         data_iter = iter(self.dataloader)
         
@@ -119,13 +108,7 @@ class GRPOTrainer(BaseTrainer):
             rewards.append(reward_tensor)
 
         rewards = torch.cat(rewards, dim=0)
-        
-        # Track final rewards
-        self.memory_profiler.track_tensors(
-            {'rewards_final': rewards},
-            stage=f"epoch_{self.epoch}_rewards"
-        )
-        
+                
         return rewards
 
     def compute_advantages(self, samples: List[BaseSample]) -> torch.Tensor:
@@ -169,11 +152,6 @@ class GRPOTrainer(BaseTrainer):
     def compute_loss(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         advantages = self.compute_advantages(samples)
-        # Track advantages
-        self.memory_profiler.track_tensors(
-            {'advantages': advantages},
-            stage=f"epoch_{self.epoch}_advantages"
-        )
 
         # Training loop
         self.adapter.train()
@@ -227,17 +205,6 @@ class GRPOTrainer(BaseTrainer):
                     unclipped_loss = -batch_advantages * ratio
                     clipped_loss = -batch_advantages * torch.clamp(ratio, ratio_clip_range[0], ratio_clip_range[1])
                     policy_loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
-                    
-                    # Track loss components
-                    self.memory_profiler.track_tensors(
-                        {
-                            'ratio': ratio,
-                            'unclipped_loss': unclipped_loss,
-                            'clipped_loss': clipped_loss,
-                            'policy_loss': policy_loss
-                        },
-                        stage=f"epoch_{self.epoch}_batch_{batch_idx}_timestep_{timestep_idx}_loss"
-                    )
 
                     # Backward and step
                     self.accelerator.backward(policy_loss)

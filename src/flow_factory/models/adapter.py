@@ -139,11 +139,11 @@ class BaseAdapter(nn.Module, ABC):
     def device(self) -> torch.device:
         return self.transformer.device
     
-    def eval(self, transformer_only: bool=True):
+    def eval(self, transformer_only: bool = True):
         """Set model to evaluation mode."""
         super().eval()
         
-        if transformer_only:
+        if not transformer_only:
             # Set all components to eval mode
             for encoder in self.text_encoders:
                 encoder.eval()
@@ -159,7 +159,7 @@ class BaseAdapter(nn.Module, ABC):
         super().train(mode)
         
         # Set all components to training mode
-        if transformer_only:
+        if not transformer_only:
             for encoder in self.text_encoders:
                 encoder.train(mode)
             self.vae.train(mode)
