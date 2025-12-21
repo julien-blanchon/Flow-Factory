@@ -71,7 +71,13 @@ class GRPOTrainer(BaseTrainer):
             batch = next(data_iter)
             
             with torch.no_grad(), self.autocast():
-                    sample_batch = self.adapter.inference(**batch, compute_log_probs=True, **kwargs)
+                    sample_kwargs = {
+                        'compute_log_probs': True,
+                        **self.training_args.to_dict(),
+                    }
+                    sample_kwargs.update(**batch)
+                    sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
+                    sample_batch = self.adapter.inference(**sample_kwargs)
             
             samples.extend(sample_batch)
 
@@ -257,16 +263,15 @@ class GRPOTrainer(BaseTrainer):
                 disable=not self.accelerator.is_local_main_process,
             ):
                 generator = create_generator(batch['prompt'], self.training_args.seed)
+                inference_kwargs = {
+                    'compute_log_probs': False,
+                    'generator': generator,
+                    **self.training_args.eval_args.to_dict(),
+                }
+                inference_kwargs.update(**batch)
+                inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)
                 with torch.no_grad(), self.autocast():
-                        samples = self.adapter.inference(
-                            **batch,
-                            generator=generator,
-                            compute_log_probs=False,
-                            guidance_scale=self.training_args.eval_args.guidance_scale,
-                            num_inference_steps=self.training_args.eval_args.num_timesteps,
-                            height=self.training_args.eval_args.resolution[0],
-                            width=self.training_args.eval_args.resolution[1],
-                        )
+                        samples = self.adapter.inference(**inference_kwargs)
                 all_samples.extend(samples)
             
             # Compute rewards

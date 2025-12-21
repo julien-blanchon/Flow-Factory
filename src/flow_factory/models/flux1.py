@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional
+from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import torch
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
@@ -122,15 +122,14 @@ class Flux1Adapter(BaseAdapter):
         guidance_scale: Optional[float] = None,
         generator: Optional[torch.Generator] = None,
         compute_log_probs: bool = True,
-        **kwargs,
     ) -> List[Flux1Sample]:
         """Execute generation and return FluxSample objects."""
         
         # Setup
-        height = height or self.training_args.resolution[0]
-        width = width or self.training_args.resolution[1]
-        num_inference_steps = num_inference_steps or self.training_args.num_timesteps
-        guidance_scale = guidance_scale or self.training_args.guidance_scale
+        height = height or (self.training_args.resolution[0] if self.training else self.training_args.eval_args.resolution[0])
+        width = width or (self.training_args.resolution[1] if self.training else self.training_args.eval_args.resolution[1])
+        num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.training_args.eval_args.num_inference_steps)
+        guidance_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.training_args.eval_args.guidance_scale)
         batch_size = prompt_embeds.shape[0] if prompt_embeds is not None else 1
         device = self.device
         dtype = prompt_embeds.dtype if prompt_embeds is not None else torch.float32
@@ -260,7 +259,7 @@ class Flux1Adapter(BaseAdapter):
         
         # Set scheduler timesteps
         _ = set_scheduler_timesteps(
-            self.scheduler, self.training_args.num_timesteps, latents.shape[1], device
+            self.scheduler, self.training_args.num_inference_steps, latents.shape[1], device
         )
         
         guidance = torch.as_tensor(guidance_scale, device=device, dtype=torch.float32)

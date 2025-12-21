@@ -10,7 +10,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/pickscore"  # Path to dataset folder
+  dataset_dir: "dataset/t2is"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
@@ -49,7 +49,7 @@ train:
   
   # Denoising process
   sde_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS
-  num_timesteps: 10  # Number of SDE timesteps
+  num_inference_steps: 10  # Number of SDE timesteps
   noise_level: 0.7  # Noise level for sampling
   num_noise_steps: 1  # Number of noise steps
   noise_steps: [1]  # Custom noise window
@@ -72,7 +72,7 @@ train:
     per_device_batch_size: 1  # Eval batch size
     seed: null  # Eval seed (defaults to training seed)
     guidance_scale: 3.5  # Guidance scale for sampling
-    num_timesteps: 20  # Number of eval timesteps
+    num_inference_steps: 20  # Number of eval timesteps
     eval_freq: 10  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration

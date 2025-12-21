@@ -31,9 +31,17 @@ def get_world_size() -> int:
 
 @dataclass
 class EvaluationArguments(ArgABC):
-    resolution: Union[int, tuple[int, int]] = field(
+    resolution: Union[int, tuple[int, int], list[int]] = field(
         default=(1024, 1024),
         metadata={"help": "Resolution for evaluation."},
+    )
+    height: Optional[int] = field(
+        default=None,
+        metadata={"help": "Height for evaluation. If None, use the first element of `resolution`."},
+    )
+    width: Optional[int] = field(
+        default=None,
+        metadata={"help": "Width for evaluation. If None, use the second element of `resolution`."},
     )
     per_device_batch_size: int = field(
         default=1,
@@ -47,7 +55,7 @@ class EvaluationArguments(ArgABC):
         default=3.5,
         metadata={"help": "Guidance scale for evaluation sampling."},
     )
-    num_timesteps: int = field(
+    num_inference_steps: int = field(
         default=30,
         metadata={"help": "Number of timesteps for SDE."},
     )
@@ -56,8 +64,35 @@ class EvaluationArguments(ArgABC):
         metadata={"help": "Evaluation frequency (in epochs). 0 for no evaluation."},
     )
     def __post_init__(self):
-        if isinstance(self.resolution, int):
+        if not self.resolution:
+            logger.warning("`resolution` is not set, using default (512, 512).")
+            self.resolution = (512, 512)
+        elif isinstance(self.resolution, (list, tuple)):
+            if len(self.resolution) == 1:
+                self.resolution = (self.resolution[0], self.resolution[0])
+            elif len(self.resolution) > 2:
+                logger.warning(f"`resolution` has {len(self.resolution)} elements, only using the first two: ({self.resolution[0]}, {self.resolution[1]}).")
+                self.resolution = (self.resolution[0], self.resolution[1])
+            else:  # len == 2
+                self.resolution = (self.resolution[0], self.resolution[1])
+        else:  # int
             self.resolution = (self.resolution, self.resolution)
+        
+        # height/width override
+        if self.height is not None and self.resolution[0] != self.height:
+                logger.warning(
+                    f"Both `resolution={self.resolution}` and `height={self.height}` are set. "
+                    f"Using height to override: ({self.height}, {self.resolution[1]})."
+                )
+                self.resolution = (self.height, self.resolution[1])
+        if self.width is not None and self.resolution[1] != self.width:
+                logger.warning(
+                    f"Both `resolution={self.resolution}` and `width={self.width}` are set. "
+                    f"Using width to override: ({self.resolution[0]}, {self.width})."
+                )
+        
+        # Final assignment
+        self.height, self.width = self.resolution
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,9 +101,17 @@ class EvaluationArguments(ArgABC):
 @dataclass
 class TrainingArguments:
     r"""Arguments pertaining to training configuration."""
-    resolution: Union[int, tuple[int, int]] = field(
+    resolution: Union[int, tuple[int, int], list[int]] = field(
         default=(512, 512),
         metadata={"help": "Resolution for sampling and training."},
+    )
+    height: Optional[int] = field(
+        default=None,
+        metadata={"help": "Height for sampling and training. If None, use the first element of `resolution`."},
+    )
+    width: Optional[int] = field(
+        default=None,
+        metadata={"help": "Width for sampling and training. If None, use the second element of `resolution`."},
     )
     # Sampling and training arguments
     per_device_batch_size: int = field(
@@ -117,7 +160,7 @@ class TrainingArguments:
         default="Flow-SDE",
         metadata={"help": "Type of SDE to use."},
     )
-    num_timesteps: int = field(
+    num_inference_steps: int = field(
         default=10,
         metadata={"help": "Number of timesteps for SDE."},
     )
@@ -208,11 +251,41 @@ class TrainingArguments:
     )
 
     def __post_init__(self):
+        if not self.resolution:
+            logger.warning("`resolution` is not set, using default (512, 512).")
+            self.resolution = (512, 512)
+        elif isinstance(self.resolution, (list, tuple)):
+            if len(self.resolution) == 1:
+                self.resolution = (self.resolution[0], self.resolution[0])
+            elif len(self.resolution) > 2:
+                logger.warning(f"`resolution` has {len(self.resolution)} elements, only using the first two: ({self.resolution[0]}, {self.resolution[1]}).")
+                self.resolution = (self.resolution[0], self.resolution[1])
+            else:  # len == 2
+                self.resolution = (self.resolution[0], self.resolution[1])
+        else:  # int
+            self.resolution = (self.resolution, self.resolution)
+        
+        # height/width override
+        if self.height is not None and self.resolution[0] != self.height:
+                logger.warning(
+                    f"Both `resolution={self.resolution}` and `height={self.height}` are set. "
+                    f"Using height to override: ({self.height}, {self.resolution[1]})."
+                )
+                self.resolution = (self.height, self.resolution[1])
+        if self.width is not None and self.resolution[1] != self.width:
+                logger.warning(
+                    f"Both `resolution={self.resolution}` and `width={self.width}` are set. "
+                    f"Using width to override: ({self.resolution[0]}, {self.width})."
+                )
+        
+        # Final assignment
+        self.height, self.width = self.resolution
+
         world_size = get_world_size()
         logger.info("World Size:" + str(world_size))
 
         if self.noise_steps is None:
-            self.noise_steps = list(range(self.num_timesteps // 2))
+            self.noise_steps = list(range(self.num_inference_steps // 2))
 
         # Adjust unique_sample_num for even distribution
         sample_num_per_iteration = world_size * self.per_device_batch_size
@@ -226,9 +299,6 @@ class TrainingArguments:
         self.gradient_accumulation_steps = max(1, self.num_batches_per_epoch // self.gradient_step_per_epoch)
 
         self.adam_betas = tuple(self.adam_betas)
-
-        if isinstance(self.resolution, int):
-            self.resolution = (self.resolution, self.resolution)
         
         if not isinstance(self.clip_range, tuple):
             self.clip_range = (-self.clip_range, self.clip_range)
