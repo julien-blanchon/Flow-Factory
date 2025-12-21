@@ -101,6 +101,7 @@ class BaseAdapter(nn.Module, ABC):
             num_noise_steps=self.training_args.num_noise_steps,
             seed=self.training_args.seed,
             sde_type=self.training_args.sde_type,
+            **self.pipeline.scheduler.config.__dict__,
         )
 
     @property

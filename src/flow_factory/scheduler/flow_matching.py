@@ -34,6 +34,10 @@ def set_scheduler_timesteps(
     seq_len: int,
     device: Optional[Union[str, torch.device]] = None,
 ):
+    sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+    if hasattr(scheduler.config, "use_flow_sigmas") and scheduler.config.use_flow_sigmas:
+        print("Using flow_sigmas")
+        sigmas = None
     # 5. Prepare scheduler, shift timesteps/sigmas according to image size (image_seq_len)
     mu = calculate_shift(
         seq_len,
@@ -46,6 +50,7 @@ def set_scheduler_timesteps(
         scheduler,
         num_inference_steps,
         device,
+        sigmas=sigmas,
         mu=mu,
     )
     return timesteps
@@ -205,8 +210,6 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         sigma = to_broadcast_tensor(sigma, sample)
         sigma_prev = to_broadcast_tensor(sigma_prev, sample)
         dt = sigma_prev - sigma # dt is negative, (batch_size, 1, 1)
-
-        print("Step at timestep:", timestep, "step_index:", step_index, "noise_level:", noise_level)
 
         sde_type = sde_type or self.sde_type
         # 3. Compute next sample
