@@ -192,7 +192,7 @@ class Flux1Adapter(BaseAdapter):
             # Scheduler step
             output = self.scheduler.step(
                 model_output=noise_pred,
-                timestep=timestep,
+                timestep=t,
                 sample=latents,
                 return_log_prob=compute_log_probs,
                 sde_type=self.training_args.sde_type,
@@ -251,6 +251,7 @@ class Flux1Adapter(BaseAdapter):
         latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
+        t = timestep[0]
         
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
         pooled_prompt_embeds = torch.stack([s.pooled_prompt_embeds for s in samples], dim=0).to(device)
@@ -280,7 +281,7 @@ class Flux1Adapter(BaseAdapter):
         # Compute log prob with ground truth next_latents
         output = self.scheduler.step(
             model_output=noise_pred,
-            timestep=timestep,
+            timestep=t,
             sample=latents,
             prev_sample=next_latents,
             return_log_prob=return_log_prob,
