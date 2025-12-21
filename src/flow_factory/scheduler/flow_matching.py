@@ -186,7 +186,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
             timestep = self.timesteps[step_index]
             sigma = self.sigmas[step_index]
             sigma_prev = self.sigmas[step_index + 1]
-        elif isinstance(timestep, torch.Tensor):
+        elif isinstance(timestep, (float, torch.Tensor)):
             step_index = self.index_for_timestep(timestep)
             sigma = self.sigmas[step_index]
             sigma_prev = self.sigmas[step_index + 1]
