@@ -16,6 +16,7 @@ from ..hparams import *
 from ..models.adapter import BaseAdapter
 from ..data_utils.loader import get_dataloader
 from ..rewards.reward_model import BaseRewardModel
+from ..logger import load_logger
 
 class BaseTrainer(ABC):
     """
@@ -67,14 +68,7 @@ class BaseTrainer(ABC):
             self.logger = None
             return
         """Initialize logging backend if specified."""
-        if self.config.logging_backend == 'wandb':
-            from ..logger import WandbLogger
-            self.logger = WandbLogger(config=self.config)
-        elif self.config.logging_backend == 'swanlab':
-            from ..logger import SwanlabLogger
-            self.logger = SwanlabLogger(config=self.config)
-        else:
-            self.logger = None
+        self.logger = load_logger(self.config)
 
     def _init_reward_model(self) -> BaseRewardModel:
         """Initialize reward model from configuration."""
