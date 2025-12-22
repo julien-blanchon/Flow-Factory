@@ -77,20 +77,20 @@ class BaseTrainer(ABC):
         return self.reward_model
 
     def _init_dataloader(self) -> Tuple[DataLoader, Union[None, DataLoader]]:
-        # Only the first process loads and preprocesses the dataset
-        with self.accelerator.main_process_first():
-            # Move text-encoder & vae to GPU for dataloader encoding
-            if self.accelerator.is_local_main_process:
-                self.adapter.on_load_text_encoder(self.accelerator.device)
-            dataloader, test_dataloader = get_dataloader(
-                self.config,
-                text_encode_func=self.adapter.encode_prompt,
-                image_encode_func=self.adapter.encode_image,
-                video_encode_func=self.adapter.encode_video,
-            )
-            # Offload text-encoder after dataloader encoding
-            if self.accelerator.is_local_main_process:
-                self.adapter.off_load_text_encoder()
+        # Move text-encoder & vae to GPU for dataloader encoding
+        if self.accelerator.is_local_main_process:
+            self.adapter.on_load_text_encoder(self.accelerator.device)
+        dataloader, test_dataloader = get_dataloader(
+            self.config,
+            text_encode_func=self.adapter.encode_prompt,
+            image_encode_func=self.adapter.encode_image,
+            video_encode_func=self.adapter.encode_video,
+        )
+        # Offload text-encoder after dataloader encoding
+        if self.accelerator.is_local_main_process:
+            self.adapter.off_load_text_encoder()
+
+        self.accelerator.wait_for_everyone()
 
         return dataloader, test_dataloader
     

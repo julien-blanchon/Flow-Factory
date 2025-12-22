@@ -83,7 +83,10 @@ class GeneralDataset(Dataset):
             self._video_encode_func = video_encode_func
             
             os.makedirs(cache_dir, exist_ok=True)
-            fingerprint = f"dataset_{os.path.basename(self.data_root)}_{split}_cache"
+            fingerprint = (
+                f"{os.path.basename(self.data_root)}_{split}_"
+                f"cutoff{max_dataset_size if max_dataset_size else 'full'}_v1"
+            )
             
             self.processed_dataset = raw_dataset.map(
                 self._preprocess_batch,
