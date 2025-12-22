@@ -182,13 +182,9 @@ class GRPOTrainer(BaseTrainer):
         self.adapter.scheduler.train()
         advantages = self.compute_advantages(samples)
 
-        # s = f"Rank {self.accelerator.process_index}: "
         for sample, adv in zip(samples, advantages):
             sample.extra_kwargs['advantage'] = adv
-        #     s += f"[{sample.short_rep()}]"
         
-        # # print(s)
-
         samples : List[List[BaseSample]] = [
             samples[i:i + self.training_args.per_device_batch_size]
             for i in range(0, len(samples), self.training_args.per_device_batch_size)
