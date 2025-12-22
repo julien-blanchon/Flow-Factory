@@ -159,7 +159,7 @@ class GRPOTrainer(BaseTrainer):
 
             mean = np.mean(group_rewards, keepdims=True)
             if not self.training_args.global_std:
-                std = max(np.std(group_rewards, keepdims=True), 1e-6)
+                std = max(np.std(group_rewards, axis=0, keepdims=True), 1e-6)
             
             advantages[mask] = (group_rewards - mean) / std
 
@@ -208,8 +208,8 @@ class GRPOTrainer(BaseTrainer):
                         with self.autocast():
                             # Forward pass
                             output = self.adapter.forward(
-                                batch_samples, 
-                                timestep_index=timestep_index, 
+                                batch_samples,
+                                timestep_index=timestep_index,
                                 return_log_prob=True
                             )
 
