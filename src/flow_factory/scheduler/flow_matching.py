@@ -106,6 +106,10 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         """Apply SDE Sampling"""
         self._is_eval = False
 
+    def rollout(self, *args, **kwargs):
+        """Apply SDE rollout sampling"""
+        self.train(*args, **kwargs)
+
     @property
     def current_noise_steps(self) -> torch.Tensor:
         """
@@ -117,6 +121,13 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         generator = torch.Generator().manual_seed(self.seed)
         selected_indices = torch.randperm(len(self.noise_steps), generator=generator)[:self.num_noise_steps]
         return self.noise_steps[selected_indices]
+
+    @property
+    def train_timesteps(self) -> torch.Tensor:
+        """
+            Returns timesteps that to train on.
+        """
+        return self.current_noise_steps
 
     def get_noise_timesteps(self) -> torch.Tensor:
         """

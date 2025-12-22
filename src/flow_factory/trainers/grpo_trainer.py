@@ -61,8 +61,7 @@ class GRPOTrainer(BaseTrainer):
 
     def sample(self, **kwargs) -> List[BaseSample]:
         """Generate rollouts for GRPO."""
-        self.adapter.train()
-        self.adapter.transformer.eval()
+        self.adapter.rollout()
         samples = []
         data_iter = iter(self.dataloader)
         
@@ -84,7 +83,6 @@ class GRPOTrainer(BaseTrainer):
             
             samples.extend(sample_batch)
 
-        self.adapter.transformer.train()
         return samples
 
     def compute_rewards(self, samples: List[BaseSample]) -> torch.Tensor:
@@ -121,17 +119,20 @@ class GRPOTrainer(BaseTrainer):
 
         rewards = torch.cat(rewards, dim=0)
                 
+        # Add rewards to samples
+        for sample, reward in zip(samples, rewards):
+            sample.extra_kwargs['reward'] = reward
+
         return rewards
 
     def compute_advantages(self, samples: List[BaseSample]) -> torch.Tensor:
         """Compute advantages for GRPO."""
 
-        # Compute rewards first
-        rewards = self.compute_rewards(samples)
+        # Get rewards and prompt IDs
+        rewards = torch.stack([sample.extra_kwargs['reward'] for sample in samples], dim=0)
+        rewards = torch.as_tensor(rewards, device=self.accelerator.device)
         prompt_ids = torch.stack([sample.prompt_ids for sample in samples], dim=0)
         prompt_ids = torch.as_tensor(prompt_ids, device=self.accelerator.device)
-        for sample, reward in zip(samples, rewards):
-            sample.extra_kwargs['reward'] = reward
 
         # Gather across processes
         gathered_prompt_ids = self.accelerator.gather(prompt_ids).cpu().numpy()
@@ -174,34 +175,36 @@ class GRPOTrainer(BaseTrainer):
             self.accelerator.num_processes, -1, *advantages.shape[1:]
         )[self.accelerator.process_index].to(self.accelerator.device)
 
+        # Add advantages to samples
+        for sample, adv in zip(samples, advantages):
+            sample.extra_kwargs['advantage'] = adv
+
         return advantages
 
     def optimize(self, samples: List[BaseSample]) -> None:
         """Main training loop: compute loss and update policy."""
         self.adapter.train()
-        self.adapter.scheduler.train()
+        # Compute rewards and advantages for samples
+        rewards = self.compute_rewards(samples)
         advantages = self.compute_advantages(samples)
-
-        for sample, adv in zip(samples, advantages):
-            sample.extra_kwargs['advantage'] = adv
         
-        samples : List[List[BaseSample]] = [
+        sample_batches : List[List[BaseSample]] = [
             samples[i:i + self.training_args.per_device_batch_size]
             for i in range(0, len(samples), self.training_args.per_device_batch_size)
         ]
 
         loss_info = defaultdict(list)
 
-        for batch_idx, batch_samples in enumerate(tqdm(
-            samples,
-            total=len(samples),
+        for batch_idx, batch in enumerate(tqdm(
+            sample_batches,
+            total=len(sample_batches),
             desc=f'Epoch {self.epoch} Training',
             position=0,
             disable=not self.accelerator.is_local_main_process,
         )):
             with self.accelerator.accumulate(self.adapter.transformer):
                 for idx, timestep_index in enumerate(tqdm(
-                    self.adapter.scheduler.current_noise_steps,
+                    self.adapter.scheduler.train_timesteps,
                     desc=f'Epoch {self.epoch} Timestep',
                     position=1,
                     leave=False,
@@ -209,18 +212,18 @@ class GRPOTrainer(BaseTrainer):
                 )):
                         # Get old log probs
                         old_log_probs = torch.stack(
-                            [sample.log_probs[timestep_index] for sample in batch_samples],
+                            [sample.log_probs[timestep_index] for sample in batch],
                             dim=0
                         )
                         adv = torch.stack(
-                            [sample.extra_kwargs['advantage'] for sample in batch_samples],
+                            [sample.extra_kwargs['advantage'] for sample in batch],
                             dim=0
                         )
 
                         with self.autocast():
                             # Forward pass
                             output = self.adapter.forward(
-                                batch_samples,
+                                batch,
                                 timestep_index=timestep_index,
                                 return_log_prob=True,
                                 noise_level=self.training_args.noise_level,
@@ -257,15 +260,17 @@ class GRPOTrainer(BaseTrainer):
                         self.adapter.get_trainable_parameters(),
                         self.training_args.max_grad_norm,
                     )
-                    loss_info = {
-                        k: torch.stack(v).mean() 
-                        for k, v in loss_info.items()
-                    }
-                    loss_info = self.accelerator.reduce(loss_info, reduction="mean")
-                    self.log_data(
-                        {f'train/{k}': v for k, v in loss_info.items()},
-                        step=self.step,
-                    )
+                    if self.logger is not None:
+                        # Communicate and log losses
+                        loss_info = {
+                            k: torch.stack(v).mean() 
+                            for k, v in loss_info.items()
+                        }
+                        loss_info = self.accelerator.reduce(loss_info, reduction="mean")
+                        self.log_data(
+                            {f'train/{k}': v for k, v in loss_info.items()},
+                            step=self.step,
+                        )
                     self.step += 1
                     loss_info = defaultdict(list)
                 

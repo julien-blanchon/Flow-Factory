@@ -190,6 +190,12 @@ class BaseAdapter(nn.Module, ABC):
         if hasattr(self.scheduler, 'eval'):
             self.scheduler.eval()
 
+    def rollout(self, *args, **kwargs):
+        """Set the model to rollout mode if applicable. Base implementation sets `transformer` to eval mode and try to set scheduler to rollout mode."""
+        self.transformer.eval()
+        if hasattr(self.scheduler, 'rollout'):
+            self.scheduler.rollout(*args, **kwargs)
+
     def train(self, mode: bool = True, transformer_only: bool = True):
         """Set model to training mode."""
         super().train(mode)
