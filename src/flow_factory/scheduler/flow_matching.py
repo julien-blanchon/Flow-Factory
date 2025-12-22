@@ -233,11 +233,11 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
                 prev_sample = prev_sample_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
 
             if return_log_prob:
-                variance = (std_dev_t * torch.sqrt(-1 * dt)) ** 2
+                std_variance = (std_dev_t * torch.sqrt(-1 * dt))
                 log_prob = (
-                    -((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * variance)
-                    - torch.log(variance) / 2
-                    - torch.log(2 * torch.as_tensor(math.pi)) / 2
+                    -((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * std_variance ** 2)
+                    - torch.log(std_variance)
+                    - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
                 )
                 log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
 
