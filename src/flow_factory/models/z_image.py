@@ -36,9 +36,8 @@ class ZImageAdapter(BaseAdapter):
     @property
     def default_target_modules(self) -> List[str]:
         return [
-            "attention.to_k", "attention.to_q", "attention.to_v",
-            "attention.to_out.0",
-            "feed_forward",
+            "attention.to_k", "attention.to_q", "attention.to_v", "attention.to_out.0",
+            "feed_forward.w1", "feed_forward.w2", "feed_forward.w3",
         ]
     
     def _encode_prompt(
@@ -86,7 +85,7 @@ class ZImageAdapter(BaseAdapter):
         for i in range(len(prompt_embeds)):
             embeddings_list.append(prompt_embeds[i][prompt_masks[i]])
 
-        return embeddings_list, text_input_ids.unbind(dim=0)
+        return embeddings_list, text_input_ids
 
     def encode_prompt(
         self,
@@ -117,12 +116,13 @@ class ZImageAdapter(BaseAdapter):
             )
         else:
             negative_prompt_embeds = []
+            negative_prompt_ids = []
 
         return {
             "prompt_embeds": prompt_embeds,
             "negative_prompt_embeds": negative_prompt_embeds,
             "prompt_ids": prompt_ids,
-            "negative_prompt_ids": negative_prompt_ids if do_classifier_free_guidance else None,
+            "negative_prompt_ids": negative_prompt_ids,
         }
     
     def encode_image(
@@ -194,7 +194,9 @@ class ZImageAdapter(BaseAdapter):
                 do_classifier_free_guidance=do_classifier_free_guidance,
                 device=device
             )
+            prompt_ids = encoded['prompt_ids']
             prompt_embeds = encoded['prompt_embeds']
+            negative_prompt_ids = encoded['negative_prompt_ids']
             negative_prompt_embeds = encoded['negative_prompt_embeds']
         else:
             prompt_embeds = prompt_embeds.to(device)
@@ -298,7 +300,7 @@ class ZImageAdapter(BaseAdapter):
                 timestep=t,
                 sample=latents,
                 compute_log_prob=compute_log_probs and current_noise_level > 0,
-            )[0]
+            )
 
             latents = output.prev_sample.to(dtype)
             all_latents.append(latents)
@@ -334,6 +336,7 @@ class ZImageAdapter(BaseAdapter):
         
         return samples
     
+    # ======================== Forward (Training) ========================
     def forward(
         self,
         samples: List[ZImageSample],
@@ -363,7 +366,10 @@ class ZImageAdapter(BaseAdapter):
         
         # Set scheduler timesteps
         _ = set_scheduler_timesteps(
-            self.scheduler, self.training_args.num_inference_steps, latents.shape[1], device
+            scheduler=self.scheduler,
+            num_inference_steps=self.training_args.num_inference_steps,
+            seq_len=latents.shape[1],
+            device=device
         )
 
         guidance = torch.as_tensor(guidance_scale, device=device, dtype=torch.float32)

@@ -242,7 +242,10 @@ class Flux1Adapter(BaseAdapter):
         
         # Set scheduler timesteps
         _ = set_scheduler_timesteps(
-            self.scheduler, self.training_args.num_inference_steps, latents.shape[1], device
+            scheduler=self.scheduler,
+            num_inference_steps=self.training_args.num_inference_steps,
+            seq_len=latents.shape[1],
+            device=device
         )
         
         guidance = torch.as_tensor(guidance_scale, device=device, dtype=torch.float32)
