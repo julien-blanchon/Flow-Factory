@@ -94,7 +94,7 @@ class ZImageAdapter(BaseAdapter):
         do_classifier_free_guidance: bool = True,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         max_sequence_length: int = 512,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Union[List[torch.FloatTensor], torch.LongTensor]]:
         device = device or self.device
         prompt = [prompt] if isinstance(prompt, str) else prompt
         prompt_embeds, prompt_ids = self._encode_prompt(
