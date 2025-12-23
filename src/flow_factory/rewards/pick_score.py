@@ -6,9 +6,8 @@ import torch
 
 from .reward_model import BaseRewardModel, RewardModelOutput
 from ..hparams import *
-from .registry import register_reward_model
 
-@register_reward_model('PickScore')
+
 class PickScoreRewardModel(BaseRewardModel):
     def __init__(self, config: Arguments, accelerator: Accelerator):
         super().__init__(config, accelerator)

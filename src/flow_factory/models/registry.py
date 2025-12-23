@@ -11,28 +11,11 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%
 logger = logging.getLogger(__name__)
 
 # Model Adapter Registry Storage
-_MODEL_ADAPTER_REGISTRY: Dict[str, str] = {}
-
-def register_model_adapter(name: str):
-    """
-    Decorator for registering new model adapters.
-    
-    Usage:
-        @register_model_adapter('my-model')
-        class MyModelAdapter(BaseAdapter):
-            ...
-    
-    Args:
-        name: Model type identifier (e.g., 'flux1', 'qwenimage')
-    
-    Returns:
-        Decorator function that registers the class
-    """
-    def decorator(cls):
-        _MODEL_ADAPTER_REGISTRY[name] = f"{cls.__module__}.{cls.__name__}"
-        return cls
-    return decorator
-
+_MODEL_ADAPTER_REGISTRY: Dict[str, str] = {
+    'flux1': 'flow_factory.models.flux1.Flux1Adapter',
+    'z-image': 'flow_factory.models.z_image.ZImageAdapter',
+    'qwenimage': 'flow_factory.models.qwenimage.QwenImageAdapter',
+}
 
 def get_model_adapter_class(identifier: str) -> Type:
     """

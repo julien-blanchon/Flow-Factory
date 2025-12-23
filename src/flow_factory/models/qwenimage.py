@@ -10,9 +10,8 @@ from PIL import Image
 import logging
 
 from .adapter import BaseAdapter, BaseSample
-from .registry import register_model_adapter
 from ..hparams import *
-from ..scheduler.flow_matching import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ..scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
 from ..utils.base import filter_kwargs
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
@@ -25,7 +24,6 @@ class QwenImageSample(BaseSample):
     prompt_embeds_mask : Optional[torch.FloatTensor] = None
     negative_prompt_embeds_mask : Optional[torch.FloatTensor] = None
 
-@register_model_adapter('qwenimage')
 class QwenImageAdapter(BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
     

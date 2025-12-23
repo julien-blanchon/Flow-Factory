@@ -11,31 +11,11 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%
 logger = logging.getLogger(__name__)
 
 # Logger Backend Registry Storage
-_LOGGER_REGISTRY: Dict[str, Optional[str]] = {
+_LOGGER_REGISTRY = {
+    'wandb': 'flow_factory.logger.wandb.WandbLogger',
+    'swanlab': 'flow_factory.logger.swanlab.SwanlabLogger',
     'none': None,
 }
-
-def register_logger(name: str):
-    """
-    Decorator for registering new logger backends.
-    
-    Usage:
-        @register_logger('mlflow')
-        class MLFlowLogger(Logger):
-            ...
-    
-    Args:
-        name: Logger backend identifier (e.g., 'wandb', 'tensorboard')
-    
-    Returns:
-        Decorator function that registers the class
-    """
-    def decorator(cls):
-        _LOGGER_REGISTRY[name] = f"{cls.__module__}.{cls.__name__}"
-        logger.info(f"Registered logger backend: {name} -> {cls.__name__}")
-        return cls
-    return decorator
-
 
 def get_logger_class(identifier: str) -> Type:
     """

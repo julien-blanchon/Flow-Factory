@@ -11,7 +11,9 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%
 logger = logging.getLogger(__name__)
 
 # Trainer Registry Storage
-_TRAINER_REGISTRY: Dict[str, str] = {}
+_TRAINER_REGISTRY: Dict[str, str] = {
+    'grpo': 'flow_factory.trainers.grpo.GRPOTrainer',
+}
 
 
 def register_trainer(name: str):

@@ -13,15 +13,10 @@ Supported backends:
 
 from .abc import Logger, LogImage, LogVideo
 from .registry import (
-    register_logger,
     get_logger_class,
     list_registered_loggers,
 )
 from .loader import load_logger
-
-# Pre-registered loggers (lazy-loaded)
-# from .wandb import WandbLogger
-# from .swanlab import SwanlabLogger
 
 __all__ = [
     # Core classes
@@ -30,7 +25,6 @@ __all__ = [
     "LogVideo",
     
     # Registry functions
-    "register_logger",
     "get_logger_class",
     "list_registered_loggers",
     

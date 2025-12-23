@@ -11,7 +11,9 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%
 logger = logging.getLogger(__name__)
 
 # Reward Model Registry Storage
-_REWARD_MODEL_REGISTRY: Dict[str, str] = {}
+_REWARD_MODEL_REGISTRY: Dict[str, str] = {
+    'pickscore': 'flow_factory.rewards.pick_score.PickScoreRewardModel',
+}
 
 
 def register_reward_model(name: str):
@@ -61,8 +63,9 @@ def get_reward_model_class(identifier: str) -> Type:
         >>> reward_model = cls(config, accelerator)
     """
     # Check registry first (case-insensitive for convenience)
-    if identifier in _REWARD_MODEL_REGISTRY:
-        class_path = _REWARD_MODEL_REGISTRY[identifier]
+    identifier_lower = identifier.lower()
+    if identifier_lower in _REWARD_MODEL_REGISTRY:
+        class_path = _REWARD_MODEL_REGISTRY[identifier_lower]
     else:
         # Assume it's a direct python path
         class_path = identifier

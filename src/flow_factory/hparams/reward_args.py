@@ -8,7 +8,6 @@ import logging
 import torch
 
 from .abc import ArgABC
-from ..rewards.registry import get_reward_model_class
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s')
 logger = logging.getLogger(__name__)
