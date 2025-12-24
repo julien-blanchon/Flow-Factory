@@ -77,7 +77,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         train_steps : Optional[Union[int, list, torch.Tensor]] = None,
         num_train_steps : Optional[int] = None,
         seed : int = 42,
-        dynamics_type : Literal["Flow-SDE", 'Dance-SDE', 'CPS'] = "Flow-SDE",
+        dynamics_type : Literal["Flow-SDE", 'Dance-SDE', 'CPS', 'ODE'] = "Flow-SDE",
         **kwargs
     ):
         super().__init__(**kwargs)

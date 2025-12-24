@@ -113,7 +113,7 @@ class BaseAdapter(nn.Module, ABC):
             train_steps=self.training_args.train_steps,
             num_train_steps=self.training_args.num_train_steps,
             seed=self.training_args.seed,
-            sde_type=self.training_args.dynamics_type,
+            dynamics_type=self.training_args.dynamics_type,
             **self.pipeline.scheduler.config.__dict__,
         )
 
