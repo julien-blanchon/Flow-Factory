@@ -156,6 +156,41 @@ class QwenImageAdapter(BaseAdapter):
 
         return images
     
+    def _standardize_data(
+        self
+        data : Union[torch.Tensor, List[torch.Tensor], None],
+        padding_value : Union[float, torch.Tensor],
+        ):
+            if data is None: 
+                return None
+            
+            # If data is a list (ragged), pad it into a batch tensor first
+            if isinstance(data, list):
+                # Ensure data is on the correct device before padding
+                if len(data) > 0 and data[0].device != device:
+                    data = [t.to(device) for t in data]
+                data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=padding_value)
+            
+            # Slice to max_len (handles both over-padded tensors and newly padded lists)
+            return data[:, :max_len] if data.shape[1] > max_len else data
+
+    def _pad_batch_prompt(
+        self,
+        prompt_embeds_mask: Union[List[torch.Tensor], torch.Tensor],
+        prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+    ):
+        txt_seq_lens = [mask.sum() for mask in prompt_embeds_mask]
+        max_pos_len = max(txt_seq_lens)
+        if isinstance(prompt_embeds, torch.Tensor) and prompt_embeds.shape[1] > max_pos_len:
+            prompt_ids = prompt_ids[:, :max_pos_len]
+            prompt_embeds = prompt_embeds[:, :max_pos_len]
+            prompt_embeds_mask = prompt_embeds_mask[:, :max_pos_len]
+        else:
+            # prompt_embeds : List[torch.Tensor]
+
+
+        return 
 
     # ======================== Inference ========================
     def inference(
@@ -167,12 +202,12 @@ class QwenImageAdapter(BaseAdapter):
         height: Optional[int] = None,
         width: Optional[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        prompt_ids: Optional[torch.LongTensor] = None,
-        prompt_embeds: Optional[torch.Tensor] = None,
-        prompt_embeds_mask: Optional[torch.Tensor] = None,
-        negative_prompt_ids: Optional[torch.LongTensor] = None,
-        negative_prompt_embeds: Optional[torch.Tensor] = None,
-        negative_prompt_embeds_mask: Optional[torch.Tensor] = None,
+        prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        prompt_embeds_mask: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        negative_prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        negative_prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        negative_prompt_embeds_mask: Optional[Union[List[torch.Tensor], torch..Tensor]] = None,
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
@@ -203,11 +238,11 @@ class QwenImageAdapter(BaseAdapter):
             negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
             negative_prompt_embeds_mask = encoded.get("negative_prompt_embeds_mask", None)
         else:
-            prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
-            prompt_embeds_mask = prompt_embeds_mask.to(device=device)
+            prompt_embeds = prompt_embeds
+            prompt_embeds_mask = prompt_embeds_mask
             if do_true_cfg:
-                negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=dtype)
-                negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device=device)
+                negative_prompt_embeds = negative_prompt_embeds
+                negative_prompt_embeds_mask = negative_prompt_embeds_mask
 
         if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
             self._warned_cfg_no_neg_prompt = True
