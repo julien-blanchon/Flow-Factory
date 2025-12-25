@@ -160,7 +160,7 @@ class QwenImageAdapter(BaseAdapter):
     def _standardize_data(
         self,
         data : Union[None, torch.Tensor, List[torch.Tensor]],
-        padding_value : float,
+        padding_value : Union[int, float],
         device: Optional[torch.device] = None,
         max_len: Optional[int] = None,
     ):
@@ -181,7 +181,6 @@ class QwenImageAdapter(BaseAdapter):
         prompt_embeds_mask: Union[List[torch.LongTensor], torch.LongTensor],
         prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-        pad_token_id: int = 0,
         device : Optional[torch.device] = None,
     ) -> Tuple[List[int], Optional[torch.LongTensor], Optional[torch.Tensor], Optional[torch.LongTensor]]:
         if isinstance(prompt_embeds_mask, list):
@@ -192,6 +191,7 @@ class QwenImageAdapter(BaseAdapter):
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
         max_pos_len = max(txt_seq_lens)
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
         padded_prompt_ids = self._standardize_data(
             prompt_ids,
             padding_value=pad_token_id,
@@ -206,7 +206,7 @@ class QwenImageAdapter(BaseAdapter):
         )
         padded_prompt_embeds_mask = self._standardize_data(
             prompt_embeds_mask,
-            padding_value=0.0,
+            padding_value=0,
             device=device,
             max_len=max_pos_len,
         )
@@ -239,6 +239,7 @@ class QwenImageAdapter(BaseAdapter):
         compute_log_prob: bool = False,
         **kwargs,
     ):
+        # 1. Prepare inputs
         height = height or (self.training_args.resolution[0] if self.training else self.training_args.eval_args.resolution[0])
         width = width or (self.training_args.resolution[1] if self.training else self.training_args.eval_args.resolution[1])
         num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.training_args.eval_args.num_inference_steps)
@@ -251,6 +252,18 @@ class QwenImageAdapter(BaseAdapter):
         )
         do_true_cfg = true_cfg_scale > 1.0 and has_neg_prompt
 
+        if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
+            self._warned_cfg_no_neg_prompt = True
+            logger.warning(
+                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
+            )
+        elif true_cfg_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
+            self._warned_no_cfg = True
+            logger.warning(
+                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1. Warning will only be shown once."
+            )
+
+        # 2. Get prompt embeddings
         if prompt_embeds is None:
             encoded = self.encode_prompt(
                 prompt=prompt,
@@ -264,43 +277,7 @@ class QwenImageAdapter(BaseAdapter):
             negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
             negative_prompt_embeds_mask = encoded.get("negative_prompt_embeds_mask", None)
         else:
-            prompt_embeds = prompt_embeds
-            prompt_embeds_mask = prompt_embeds_mask
-            if do_true_cfg:
-                negative_prompt_embeds = negative_prompt_embeds
-                negative_prompt_embeds_mask = negative_prompt_embeds_mask
-
-        if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
-            self._warned_cfg_no_neg_prompt = True
-            logger.warning(
-                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
-            )
-        elif true_cfg_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
-            self._warned_no_cfg = True
-            logger.warning(
-                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1. Warning will only be shown once."
-            )
-        batch_size = prompt_embeds.shape[0]
-        
-        num_channels_latents = self.pipeline.transformer.config.in_channels // 4
-        latents = self.pipeline.prepare_latents(
-            batch_size=batch_size,
-            num_channels_latents=num_channels_latents,
-            height=height,
-            width=width,
-            dtype=dtype,
-            device=device,
-            generator=generator,
-        )
-        img_shapes = [[(1, height // self.pipeline.vae_scale_factor // 2, width // self.pipeline.vae_scale_factor // 2)]] * batch_size
-
-
-        timesteps = set_scheduler_timesteps(
-            scheduler=self.scheduler,
-            num_inference_steps=num_inference_steps,
-            seq_len=latents.shape[1],
-            device=device,
-        )
+            pass
 
         # Truncate prompt embeddings and masks to max valid lengths in the batch
         txt_seq_lens, prompt_ids, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
@@ -318,9 +295,32 @@ class QwenImageAdapter(BaseAdapter):
                 device=device
             )
 
+        # 3. Prepare latents
+        batch_size = prompt_embeds.shape[0]
+        
+        num_channels_latents = self.pipeline.transformer.config.in_channels // 4
+        latents = self.pipeline.prepare_latents(
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+            dtype=dtype,
+            device=device,
+            generator=generator,
+        )
+        img_shapes = [[(1, height // self.pipeline.vae_scale_factor // 2, width // self.pipeline.vae_scale_factor // 2)]] * batch_size
+
+        # 4. Set scheduler timesteps
+        timesteps = set_scheduler_timesteps(
+            scheduler=self.scheduler,
+            num_inference_steps=num_inference_steps,
+            seq_len=latents.shape[1],
+            device=device,
+        )
+
         guidance = None # Always None for Qwen-Image
 
-        # Denoising loop
+        # 5. Denoising loop
         all_latents = [latents]
         all_log_probs = [] if compute_log_prob else None
         
@@ -376,8 +376,10 @@ class QwenImageAdapter(BaseAdapter):
             if compute_log_prob:
                 all_log_probs.append(output.log_prob)
 
+        # 6. Decode latents to images
         images = self.decode_latents(latents, height, width)
 
+        # 7. Prepare output samples
         samples = [
             QwenImageSample(
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
@@ -454,18 +456,18 @@ class QwenImageAdapter(BaseAdapter):
         img_shapes = [s.img_shapes for s in samples]
 
         # Truncate prompt embeddings and masks to max valid lengths in the batch
-        txt_seq_lens, prompt_ids, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
-            prompt_embeds_mask,
-            prompt_ids,
-            prompt_embeds,
+        txt_seq_lens, _, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
+            prompt_embeds_mask=prompt_embeds_mask,
+            prompt_ids=None,
+            prompt_embeds=prompt_embeds,
             device=device
         )
         
         if do_true_cfg:
-            negative_txt_seq_lens, negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
-                negative_prompt_embeds_mask,
-                negative_prompt_ids,
-                negative_prompt_embeds,
+            negative_txt_seq_lens, _, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
+                prompt_embeds_mask=negative_prompt_embeds_mask,
+                prompt_ids=None,
+                prompt_embeds=negative_prompt_embeds,
                 device=device
             )
         else:
