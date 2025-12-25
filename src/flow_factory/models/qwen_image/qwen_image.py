@@ -5,6 +5,7 @@ import os
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
 import logging
@@ -157,40 +158,65 @@ class QwenImageAdapter(BaseAdapter):
         return images
     
     def _standardize_data(
-        self
-        data : Union[torch.Tensor, List[torch.Tensor], None],
-        padding_value : Union[float, torch.Tensor],
-        ):
-            if data is None: 
-                return None
-            
-            # If data is a list (ragged), pad it into a batch tensor first
-            if isinstance(data, list):
-                # Ensure data is on the correct device before padding
-                if len(data) > 0 and data[0].device != device:
-                    data = [t.to(device) for t in data]
-                data = torch.nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=padding_value)
-            
-            # Slice to max_len (handles both over-padded tensors and newly padded lists)
-            return data[:, :max_len] if data.shape[1] > max_len else data
+        self,
+        data : Union[None, torch.Tensor, List[torch.Tensor]],
+        padding_value : float,
+        device: Optional[torch.device] = None,
+        max_len: Optional[int] = None,
+    ):
+        if data is None: 
+            return None
+        
+        # If data is a list (ragged), pad it into a batch tensor first
+        if isinstance(data, list):
+            # Ensure data is on the correct device before padding
+            if len(data) > 0 and data[0].device != device:
+                data = [t.to(device) for t in data]
+            data = pad_sequence(data, batch_first=True, padding_value=padding_value)
+        
+        return data[:, :max_len] if data.shape[1] > max_len else data
 
     def _pad_batch_prompt(
         self,
-        prompt_embeds_mask: Union[List[torch.Tensor], torch.Tensor],
+        prompt_embeds_mask: Union[List[torch.LongTensor], torch.LongTensor],
         prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-    ):
-        txt_seq_lens = [mask.sum() for mask in prompt_embeds_mask]
-        max_pos_len = max(txt_seq_lens)
-        if isinstance(prompt_embeds, torch.Tensor) and prompt_embeds.shape[1] > max_pos_len:
-            prompt_ids = prompt_ids[:, :max_pos_len]
-            prompt_embeds = prompt_embeds[:, :max_pos_len]
-            prompt_embeds_mask = prompt_embeds_mask[:, :max_pos_len]
+        pad_token_id: int = 0,
+        device : Optional[torch.device] = None,
+    ) -> Tuple[List[int], Optional[torch.LongTensor], Optional[torch.Tensor], Optional[torch.LongTensor]]:
+        if isinstance(prompt_embeds_mask, list):
+            device = device or prompt_embeds_mask[0].device
+            txt_seq_lens = [mask.sum() for mask in prompt_embeds_mask]
         else:
-            # prompt_embeds : List[torch.Tensor]
+            device = device or prompt_embeds_mask.device
+            txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
+        max_pos_len = max(txt_seq_lens)
+        padded_prompt_ids = self._standardize_data(
+            prompt_ids,
+            padding_value=pad_token_id,
+            device=device,
+            max_len=max_pos_len,
+        )
+        padded_prompt_embeds = self._standardize_data(
+            prompt_embeds,
+            padding_value=0.0,
+            device=device,
+            max_len=max_pos_len,
+        )
+        padded_prompt_embeds_mask = self._standardize_data(
+            prompt_embeds_mask,
+            padding_value=0.0,
+            device=device,
+            max_len=max_pos_len,
+        )
 
-        return 
+        return (
+            txt_seq_lens,
+            padded_prompt_ids,
+            padded_prompt_embeds,
+            padded_prompt_embeds_mask,
+        )
 
     # ======================== Inference ========================
     def inference(
@@ -204,10 +230,10 @@ class QwenImageAdapter(BaseAdapter):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-        prompt_embeds_mask: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         negative_prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         negative_prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-        negative_prompt_embeds_mask: Optional[Union[List[torch.Tensor], torch..Tensor]] = None,
+        negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
@@ -277,22 +303,20 @@ class QwenImageAdapter(BaseAdapter):
         )
 
         # Truncate prompt embeddings and masks to max valid lengths in the batch
-        txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist() if prompt_embeds_mask is not None else None
-        if txt_seq_lens:
-            max_pos_len = max(txt_seq_lens)
-            if prompt_embeds.shape[1] > max_pos_len:
-                prompt_embeds = prompt_embeds[:, :max_pos_len]
-                prompt_embeds_mask = prompt_embeds_mask[:, :max_pos_len]
-
-        negative_txt_seq_lens = (
-            negative_prompt_embeds_mask.sum(dim=1).tolist() if do_true_cfg and negative_prompt_embeds_mask is not None else None
+        txt_seq_lens, prompt_ids, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
+            prompt_embeds_mask,
+            prompt_ids,
+            prompt_embeds,
+            device=device
         )
-        if negative_txt_seq_lens:
-            negative_txt_seq_lens = negative_prompt_embeds_mask.sum(dim=1).long().tolist()
-            max_neg_len = max(negative_txt_seq_lens)
-            if negative_prompt_embeds.shape[1] > max_neg_len:
-                negative_prompt_embeds = negative_prompt_embeds[:, :max_neg_len]
-                negative_prompt_embeds_mask = negative_prompt_embeds_mask[:, :max_neg_len]
+
+        if do_true_cfg:
+            negative_txt_seq_lens, negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
+                negative_prompt_embeds_mask,
+                negative_prompt_ids,
+                negative_prompt_embeds,
+                device=device
+            )
 
         guidance = None # Always None for Qwen-Image
 
@@ -414,8 +438,8 @@ class QwenImageAdapter(BaseAdapter):
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
 
-        prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
-        prompt_embeds_mask = torch.stack([s.prompt_embeds_mask for s in samples], dim=0).to(device)
+        prompt_embeds = [s.prompt_embeds for s in samples]
+        prompt_embeds_mask = [s.prompt_embeds_mask for s in samples]
         # Assume all samples have negative prompt embeds if any sample has it
         has_neg_prompt = all(
             s.negative_prompt_embeds is not None and s.negative_prompt_embeds_mask is not None
@@ -424,28 +448,29 @@ class QwenImageAdapter(BaseAdapter):
         do_true_cfg = any(gs > 1.0 for gs in true_cfg_scale) and has_neg_prompt
 
         if do_true_cfg:
-            negative_prompt_embeds = torch.stack([s.negative_prompt_embeds for s in samples], dim=0).to(device)
-            negative_prompt_embeds_mask = torch.stack([s.negative_prompt_embeds_mask for s in samples], dim=0).to(device)    
+            negative_prompt_embeds = [s.negative_prompt_embeds for s in samples]
+            negative_prompt_embeds_mask = [s.negative_prompt_embeds_mask for s in samples]
     
         img_shapes = [s.img_shapes for s in samples]
 
         # Truncate prompt embeddings and masks to max valid lengths in the batch
-        txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist() if prompt_embeds_mask is not None else None
-        if txt_seq_lens:
-            max_pos_len = max(txt_seq_lens)
-            if prompt_embeds.shape[1] > max_pos_len:
-                prompt_embeds = prompt_embeds[:, :max_pos_len]
-                prompt_embeds_mask = prompt_embeds_mask[:, :max_pos_len]
-
-        negative_txt_seq_lens = (
-            negative_prompt_embeds_mask.sum(dim=1).tolist() if do_true_cfg and negative_prompt_embeds_mask is not None else None
+        txt_seq_lens, prompt_ids, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
+            prompt_embeds_mask,
+            prompt_ids,
+            prompt_embeds,
+            device=device
         )
-        if negative_txt_seq_lens:
-            negative_txt_seq_lens = negative_prompt_embeds_mask.sum(dim=1).long().tolist()
-            max_neg_len = max(negative_txt_seq_lens)
-            if negative_prompt_embeds.shape[1] > max_neg_len:
-                negative_prompt_embeds = negative_prompt_embeds[:, :max_neg_len]
-                negative_prompt_embeds_mask = negative_prompt_embeds_mask[:, :max_neg_len]
+        
+        if do_true_cfg:
+            negative_txt_seq_lens, negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
+                negative_prompt_embeds_mask,
+                negative_prompt_ids,
+                negative_prompt_embeds,
+                device=device
+            )
+        else:
+            negative_prompt_embeds = None
+            negative_prompt_embeds_mask = None
 
         guidance = None # Always None for Qwen-Image
 
