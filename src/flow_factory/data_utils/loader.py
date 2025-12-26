@@ -1,5 +1,6 @@
 # src/flow_factory/data_utils/loader.py
 import os
+import shutil
 from typing import Union, Tuple, Optional
 import torch
 from torch.utils.data import DataLoader
@@ -87,21 +88,30 @@ def _create_or_load_dataset(
     # Step 2: Main process merges all shards
     if accelerator.is_main_process:
         logger.info(f"Merging {kwargs['num_shards']} shards for {split} split")
-        shards = [
-            load_from_disk(
-                os.path.join(dataset.cache_dir, f"{os.path.basename(merged_cache_path)}_shard{i}")
+        shard_paths = []
+        shards = []
+        for i in range(kwargs['num_shards']):
+            shard_path_i = os.path.join(
+                dataset.cache_dir, 
+                f"{os.path.basename(merged_cache_path)}_shard{i}"
             )
-            for i in range(kwargs['num_shards'])
-        ]
+            shard_paths.append(shard_path_i)
+            shards.append(load_from_disk(shard_path_i))
+        
         merged = concatenate_datasets(shards)
         merged.save_to_disk(merged_cache_path)
         logger.info(f"Merged {split} dataset saved to {merged_cache_path}")
+        
+        # Step 3: Clean up shard caches
+        for shard_path_i in shard_paths:
+            if os.path.exists(shard_path_i):
+                shutil.rmtree(shard_path_i)
+        logger.info(f"Cleaned up {len(shard_paths)} shard caches")
     
     accelerator.wait_for_everyone()
     
-    # Step 3: All processes load merged dataset
+    # Step 4: All processes load merged dataset
     return GeneralDataset.load_merged(merged_cache_path)
-
 
 def get_dataloader(
     config: Arguments,

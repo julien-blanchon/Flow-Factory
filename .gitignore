@@ -1,11 +1,8 @@
-# pycache
-
 logs/
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyc
-*.log
 
 *.egg-info/
 
@@ -13,3 +10,8 @@ __pycache__/
 
 *.ipynb
 
+*out
+*.log
+*.err
+
+.vscode

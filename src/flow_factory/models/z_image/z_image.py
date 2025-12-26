@@ -358,6 +358,7 @@ class ZImageAdapter(BaseAdapter):
         latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
+        num_inference_steps = len(samples[0].timesteps)
         t = (1000 - timestep) / 1000 # Z-Image uses reversed timesteps
         t_norm = t[0].item()
 
@@ -367,7 +368,7 @@ class ZImageAdapter(BaseAdapter):
         # 2. Set scheduler timesteps        
         _ = set_scheduler_timesteps(
             scheduler=self.scheduler,
-            num_inference_steps=self.training_args.num_inference_steps,
+            num_inference_steps=num_inference_steps,
             seq_len=latents.shape[1],
             device=device
         )

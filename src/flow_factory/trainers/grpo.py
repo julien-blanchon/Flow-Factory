@@ -137,7 +137,13 @@ class GRPOTrainer(BaseTrainer):
 
         # 2. Gather prompt ids
         # Pad if necessary
-        pad_token_id = self.adapter.tokenizer.pad_token_id or self.adapter.tokenizer.eos_token_id or 0
+        if hasattr(self.adapter.tokenizer, 'pad_token_id') and self.adapter.tokenizer.pad_token_id is not None:
+            pad_token_id = self.adapter.tokenizer.pad_token_id
+        elif hasattr(self.adapter.tokenizer, 'eos_token_id') and self.adapter.tokenizer.eos_token_id is not None:
+            pad_token_id = self.adapter.tokenizer.eos_token_id
+        else:
+            pad_token_id = 0
+
         prompt_ids_list = [sample.prompt_ids.to(self.accelerator.device) for sample in samples]
         prompt_ids = pad_sequence(prompt_ids_list, batch_first=True, padding_value=pad_token_id)
 

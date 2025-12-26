@@ -22,6 +22,7 @@ logger = setup_logger(__name__)
 @dataclass
 class Flux2Sample(BaseSample):
     """Output class for Flux2Adapter models."""
+    latent_ids : Optional[torch.Tensor] = None
     text_ids : Optional[torch.Tensor] = None
     condition_images : Optional[Union[List[Image.Image], Image.Image]] = None
     image_latents : Optional[torch.Tensor] = None
@@ -54,7 +55,7 @@ class Flux2Adapter(BaseAdapter):
             
             # --- Single Stream Block Targets ---
             "attn.to_qkv_mlp_proj", 
-            "attn.to_out"
+            # "attn.to_out.0"
         ]
 
     # ======================== Encoding & Decoding ========================
@@ -225,7 +226,6 @@ class Flux2Adapter(BaseAdapter):
         else:
             has_images = False
 
-        device = self.pipeline.text_encoder.device
         # Case 1: batch process when no images
         if not has_images:
             final_prompts = (
@@ -236,10 +236,11 @@ class Flux2Adapter(BaseAdapter):
                     device=device
                 ) if caption_upsample_temperature else prompt
             )
+            input_kwargs = kwargs.copy()
+            input_kwargs = {'device': self.pipeline.text_encoder.device}
             batch = self.encode_prompt(
                 prompt=final_prompts,
-                device=device,
-                **filter_kwargs(self.encode_prompt, **kwargs)
+                **input_kwargs
             )
             return batch
         
@@ -262,11 +263,11 @@ class Flux2Adapter(BaseAdapter):
                 )
                 if caption_upsample_temperature else p
             )
-            
+            input_kwargs = kwargs.copy()
+            input_kwargs = {'device': self.pipeline.text_encoder.device}
             prompt_encode_dict = self.encode_prompt(
                 prompt=final_p,
-                device=self.pipeline.text_encoder.device,
-                **filter_kwargs(self.encode_prompt, **kwargs)
+                **input_kwargs,
             )
 
             if len(imgs) == 0 or imgs[0] is None:
@@ -274,11 +275,12 @@ class Flux2Adapter(BaseAdapter):
                     'image_latents': None,
                     'image_latent_ids': None,
                 }
-            else:            
+            else:
+                input_kwargs = kwargs.copy()
+                input_kwargs = {'device': self.pipeline.vae.device}
                 image_encode_dict = self.encode_image(
                     images=imgs,
-                    device=self.pipeline.vae.device,
-                    **filter_kwargs(self.encode_image, **kwargs)
+                    **filter_kwargs(self.encode_image, **input_kwargs)
                 )
                 sample = {**prompt_encode_dict, **image_encode_dict}
                 batch.append(sample)
@@ -329,8 +331,8 @@ class Flux2Adapter(BaseAdapter):
 
         # 2. Preprocess inputs
         if (
-            prompt_embeds is None or text_ids is None
-            or image_latents is None or image_latent_ids is None
+            (prompt is not None and (prompt_embeds is None or text_ids is None))
+            or (condition_images is not None and (image_latents is None or image_latent_ids is None))
         ):
             if isinstance(prompt, str):
                 prompt = [prompt]
@@ -438,7 +440,8 @@ class Flux2Adapter(BaseAdapter):
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b],
                 prompt_embeds=prompt_embeds[b],
-                text_ids=text_ids[b] if text_ids is not None else None,
+                latent_ids=latent_ids[b],
+                text_ids=text_ids[b],
                 condition_images=condition_images if condition_images is not None else None,
                 image_latents=image_latents[b] if image_latents is not None else None,
                 image_latent_ids=image_latent_ids[b] if image_latent_ids is not None else None,
@@ -558,7 +561,10 @@ class Flux2Adapter(BaseAdapter):
         latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
         next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
         timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
+        num_inference_steps = len(samples[0].timesteps)
+        t = timestep[0]
         prompt_embeds = torch.stack([s.prompt_embeds for s in samples], dim=0).to(device)
+        latent_ids = torch.stack([s.latent_ids for s in samples], dim=0).to(device)
         text_ids = torch.stack([s.text_ids for s in samples], dim=0).to(device)
         image_latents = torch.stack(
             [s.image_latents for s in samples],
@@ -570,8 +576,6 @@ class Flux2Adapter(BaseAdapter):
         ) if samples[0].image_latent_ids is not None else None
         attention_kwargs = samples[0].extra_kwargs.get('attention_kwargs', None)
 
-        latent_ids = self.pipeline._prepare_latent_ids(latents)
-
         # Catenate condition latents if given
         latent_model_input = latents.to(self.pipeline.transformer.dtype)
         latent_image_ids = latent_ids
@@ -581,13 +585,13 @@ class Flux2Adapter(BaseAdapter):
             latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
                 
         # 2. Set scheduler timesteps
-        _ = set_scheduler_timesteps(
-            scheduler=self.scheduler,
-            num_inference_steps=self.training_args.num_inference_steps,
-            seq_len=latents.shape[1],
-            device=device
-        )
-        
+        mu = compute_empirical_mu(image_seq_len=latents.shape[1], num_steps=num_inference_steps)
+        timesteps = set_scheduler_timesteps(
+            scheduler=self.pipeline.scheduler,
+            num_inference_steps=num_inference_steps,
+            device=device,
+            mu=mu,
+        )        
 
         # 3. Predict noise
         noise_pred = self.transformer(

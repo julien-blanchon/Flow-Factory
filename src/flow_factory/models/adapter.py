@@ -369,13 +369,7 @@ class BaseAdapter(nn.Module, ABC):
             target_modules=self.model_args.target_modules,
             components=self.model_args.target_components
         )
-
-        log_string = "Target module map:"
-        for comp, modules in component_map.items():
-            log_string += f"\n  {comp}: {modules}"
-        
-        logger.info(log_string)
-        
+                
         return component_map
 
     # ============================== EMA Management ==============================
