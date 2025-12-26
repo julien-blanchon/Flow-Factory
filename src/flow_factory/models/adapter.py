@@ -16,7 +16,6 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.models.modeling_utils import ModelMixin
 from peft import get_peft_model, LoraConfig, PeftModel
 from accelerate import Accelerator
-from accelerate.utils import GatheredParameters
 
 from ..ema import EMAModuleWrapper
 from ..scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
@@ -116,7 +115,7 @@ class BaseAdapter(nn.Module, ABC):
             )
 
         # Set precision
-        self._cast_frozen_components()
+        self._mix_precision()
 
         # Enable gradient checkpointing if needed
         if self.training_args.enable_gradient_checkpointing:
@@ -401,9 +400,8 @@ class BaseAdapter(nn.Module, ABC):
     def use_ema_parameters(self):
         if hasattr(self, 'ema_wrapper') and self.ema_wrapper is not None:
             trainable_params = self.get_trainable_parameters()
-            with GatheredParameters(trainable_params, modifier_rank=None):
-                with self.ema_wrapper.use_ema_parameters(trainable_params):
-                    yield
+            with self.ema_wrapper.use_ema_parameters(trainable_params):
+                yield
         else:
             yield
     
@@ -420,18 +418,37 @@ class BaseAdapter(nn.Module, ABC):
                     logger.warning(f"{comp_name} does not support gradient checkpointing")
 
     # ============================== Precision Management ==============================
-    def _cast_frozen_components(self):
+    def _mix_precision(self):
         """Apply mixed precision to all components."""
         inference_dtype = self._inference_dtype
         
         # Text encoders and VAE always use inference dtype
         for encoder in self.text_encoders:
             encoder.to(dtype=inference_dtype)
+        
         self.vae.to(dtype=inference_dtype)
         
-        # Transformer will be handled separately by `accelerator.prepare`
-        # for transformer in self.transformers:
-        #     transformer.to(dtype=inference_dtype)
+        # Transformer: inference dtype first (will be updated later for trainable params)
+        for transformer in self.transformers:
+            transformer.to(dtype=inference_dtype)
+
+        master_dtype = self.model_args.master_weight_dtype
+        
+        if master_dtype == inference_dtype:
+            return
+        
+        trainable_count = 0
+
+        for comp_name in self.model_args.target_components:
+            if hasattr(self, comp_name):
+                component = getattr(self, comp_name)
+                for name, param in component.named_parameters():
+                    if param.requires_grad:
+                        param.data = param.data.to(dtype=master_dtype)
+                        trainable_count += 1
+        
+        if trainable_count > 0:
+            logger.info(f"Set {trainable_count} trainable parameters to {master_dtype}")
 
     # ============================== LoRA Management ==============================
     def apply_lora(
