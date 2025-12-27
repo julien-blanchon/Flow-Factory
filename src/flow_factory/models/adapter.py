@@ -15,7 +15,7 @@ from diffusers.utils.outputs import BaseOutput
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.models.modeling_utils import ModelMixin
 from peft import get_peft_model, LoraConfig, PeftModel
-from accelerate import Accelerator
+from accelerate import Accelerator, DistributedType
 
 from ..ema import EMAModuleWrapper
 from ..scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
@@ -530,6 +530,194 @@ class BaseAdapter(ABC):
         return results[components[0]] if len(results) == 1 else results
 
     # ============================== Checkpoint Management ==============================
+
+    # -------------------------------- Helpers --------------------------------
+    def _is_zero3(self) -> bool:
+        """Check if DeepSpeed ZeRO Stage 3 is enabled."""
+        if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
+            return False
+        ds_plugin = self.accelerator.state.deepspeed_plugin
+        return ds_plugin is not None and ds_plugin.zero_stage == 3
+
+
+    def _is_fsdp_full_shard(self) -> bool:
+        """Check if FSDP Full Shard is enabled."""
+        if self.accelerator.distributed_type != DistributedType.FSDP:
+            return False
+        fsdp_plugin = self.accelerator.state.fsdp_plugin
+        if fsdp_plugin is None:
+            return False
+        # Check for full sharding strategy
+        from torch.distributed.fsdp import ShardingStrategy
+        return fsdp_plugin.sharding_strategy in (
+            ShardingStrategy.FULL_SHARD,
+            ShardingStrategy.SHARD_GRAD_OP,
+        )
+        
+    def _get_state_dict(
+        self,
+        model: torch.nn.Module,
+        dtype: Optional[torch.dtype] = None,
+    ) -> dict:
+        """
+        Get state dict with proper handling for distributed strategies.
+        
+        Handles:
+            - Standard DDP / single GPU
+            - DeepSpeed ZeRO Stage 3 (gathers sharded params)
+            - FSDP Full Shard (gathers sharded params)
+        """
+        if self._is_zero3() or self._is_fsdp_full_shard():
+            # Use accelerator's get_state_dict which handles gathering
+            state_dict = self.accelerator.get_state_dict(model)
+        else:
+            # Standard case: unwrap and get state dict directly
+            unwrapped = self.accelerator.unwrap_model(model)
+            state_dict = unwrapped.state_dict()
+        
+        # Cast to target dtype if specified (only on main process with valid state_dict)
+        if dtype is not None and state_dict is not None:
+            state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
+        
+        return state_dict
+
+    # -------------------------------------------- Save ------------------------------------
+    def _save_lora(
+        self,
+        model: torch.nn.Module,
+        save_path: str,
+        dtype: torch.dtype,
+    ) -> None:
+        """Save LoRA adapter with distributed training support."""        
+        unwrapped = self.accelerator.unwrap_model(model)
+        
+        if not isinstance(unwrapped, PeftModel):
+            logger.warning(f"Model is not a PeftModel, skipping LoRA save")
+            return
+        
+        if self._is_zero3() or self._is_fsdp_full_shard():
+            # Gather LoRA weights and save on main process only
+            state_dict = self._get_state_dict(model, dtype=dtype)
+            if self.accelerator.is_main_process and state_dict is not None:
+                # Filter to only LoRA parameters
+                lora_state_dict = {
+                    k: v for k, v in state_dict.items() 
+                    if 'lora_' in k or 'bias' in k
+                }
+                unwrapped.save_pretrained(
+                    save_path,
+                    state_dict=lora_state_dict,
+                    safe_serialization=True,
+                )
+        else:
+            # Standard save
+            if self.accelerator.is_main_process:
+                unwrapped.save_pretrained(save_path)
+
+    def _save_full_model(
+        self,
+        model: torch.nn.Module,
+        save_path: str,
+        dtype: torch.dtype,
+        max_shard_size: str = "5GB",
+    ) -> None:
+        """Save full model weights with distributed training support."""
+        unwrapped = self.accelerator.unwrap_model(model)
+        state_dict = self._get_state_dict(model, dtype=dtype)
+        
+        # Only main process saves
+        if not self.accelerator.is_main_process:
+            return
+        
+        if state_dict is None:
+            logger.warning("State dict is None, skipping save")
+            return
+        
+        if hasattr(unwrapped, "save_pretrained"):
+            unwrapped.save_pretrained(
+                save_path,
+                state_dict=state_dict,
+                max_shard_size=max_shard_size,
+                safe_serialization=True,
+            )
+        else:
+            # Fallback to torch save
+            weight_path = os.path.join(save_path, "pytorch_model.bin")
+            torch.save(state_dict, weight_path)
+
+
+    def save_checkpoint(
+        self,
+        path: str,
+        max_shard_size: str = "5GB",
+        dtype: Union[torch.dtype, str] = torch.bfloat16,
+        save_ema: bool = True,
+    ):
+        """
+        Save checkpoint for target components.
+        
+        Properly handles:
+            - Standard DDP / single GPU
+            - DeepSpeed ZeRO Stage 3
+            - FSDP Full Shard
+            - LoRA adapters
+            - EMA weights
+        """
+        # Normalize dtype
+        if isinstance(dtype, str):
+            dtype = {
+                'bfloat16': torch.bfloat16,
+                'float16': torch.float16,
+                'float32': torch.float32,
+            }.get(dtype.lower(), torch.bfloat16)
+        
+        # Setup EMA context
+        save_context = self.use_ema_parameters if save_ema else nullcontext
+        
+        with save_context():
+            # Create output directory on main process
+            if self.accelerator.is_main_process:
+                os.makedirs(path, exist_ok=True)
+            
+            # Sync before saving
+            self.accelerator.wait_for_everyone()
+            
+            for comp_name in self.target_module_map.keys():
+                if not hasattr(self, comp_name):
+                    logger.warning(f"Component {comp_name} not found, skipping save")
+                    continue
+                
+                component = getattr(self, comp_name)
+                
+                # Determine save path
+                comp_path = (
+                    os.path.join(path, comp_name) 
+                    if len(self.model_args.target_components) > 1 
+                    else path
+                )
+                
+                if self.accelerator.is_main_process:
+                    os.makedirs(comp_path, exist_ok=True)
+                
+                self.accelerator.wait_for_everyone()
+                
+                # Dispatch to appropriate save method
+                if self.model_args.finetune_type == 'lora':
+                    if self.accelerator.is_main_process:
+                        logger.info(f"Saving LoRA weights for {comp_name} to {comp_path}")
+                    self._save_lora(component, comp_path, dtype)
+                else:
+                    if self.accelerator.is_main_process:
+                        logger.info(f"Saving full weights for {comp_name} to {comp_path}")
+                    self._save_full_model(component, comp_path, dtype, max_shard_size)
+            
+            # Sync after saving
+            self.accelerator.wait_for_everyone()
+        
+        if self.accelerator.is_main_process:
+            logger.info(f"Checkpoint saved successfully to {path}")
+
+    # -------------------------------------------- Load -------------------------------------------
     def load_checkpoint(self, path: str):
         """
         Loads safetensors checkpoints. Detects if the path contains LoRA adapters,
@@ -568,57 +756,6 @@ class BaseAdapter(ABC):
 
         # Move model back to target device
         self.on_load()
-
-    def save_checkpoint(
-            self,
-            path: str,
-            max_shard_size: str = "5GB",
-            dtype: Union[torch.dtype, str] = torch.bfloat16,
-            save_ema: bool = True,
-        ):
-        """Save checkpoint for target components."""
-        save_context = nullcontext if not save_ema else self.use_ema_parameters
-
-        with save_context():
-            os.makedirs(path, exist_ok=True)
-
-            if isinstance(dtype, str):
-                dtype = {
-                    'bfloat16': torch.bfloat16,
-                    'float16': torch.float16,
-                    'float32': torch.float32
-                }.get(dtype.lower(), torch.bfloat16)
-
-        for comp_name in self.target_module_map.keys():
-            if not hasattr(self, comp_name):
-                logger.warning(f"Component {comp_name} not found, skipping save")
-                continue
-
-            component = getattr(self, comp_name)
-            comp_path = os.path.join(path, comp_name) if len(self.model_args.target_components) > 1 else path
-            os.makedirs(comp_path, exist_ok=True)
-
-            # remove hooks/wrappers to get the underlying state dict
-            unwrapped_model = self.accelerator.unwrap_model(component)
-            state_dict = self.accelerator.get_state_dict(unwrapped_model)
-
-            if self.model_args.finetune_type == 'lora' and isinstance(unwrapped_model, PeftModel):
-                logger.info(f"Saving LoRA adapter for {comp_name} to {comp_path}")
-                unwrapped_model.save_pretrained(comp_path)
-            elif hasattr(unwrapped_model, "save_pretrained"):
-                logger.info(f"Saving full weights for {comp_name} to {comp_path}")
-                unwrapped_model.to(dtype).save_pretrained(comp_path, max_shard_size=max_shard_size)
-            else:
-                # Fallback to torch save
-                logger.info(f"Saving full weights (torch) for {comp_name} to {weight_path}")
-                weight_path = os.path.join(comp_path, "pytorch_model.bin")
-                state_dict = {
-                    k: v.to(dtype) for k, v in self.accelerator.get_state_dict(unwrapped_model).items()
-                }
-                torch.save(state_dict, weight_path)
-
-        logger.info(f"Checkpoint saved successfully to {path}")
-
     # ============================== Freezing Components ==============================
     def _freeze_text_encoders(self):
         """Freeze all text encoders."""

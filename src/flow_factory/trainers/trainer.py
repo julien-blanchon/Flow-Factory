@@ -141,9 +141,8 @@ class BaseTrainer(ABC):
 
     def save_checkpoint(self, path: str):
         """Save trainer state to a specific path."""
-        if self.accelerator.is_main_process:
-            os.makedirs(path, exist_ok=True)
-            self.adapter.save_checkpoint(path)
+        os.makedirs(path, exist_ok=True)
+        self.adapter.save_checkpoint(path)
 
         self.accelerator.wait_for_everyone()
 

@@ -44,8 +44,9 @@ class QwenImageAdapter(BaseAdapter):
     def default_target_modules(self) -> List[str]:
         """Default LoRA target modules for Qwen-Image transformer."""
         return [
-            "attn.to_k", "attn.to_q", "attn.to_v", "attn.to_out.0",
-            "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj", "attn.to_add_out",
+            "attn.to_k", "attn.to_q", "attn.to_v", "attn.to_out.0", # Image Stream / Main Stream
+            "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj", "attn.to_add_out", # Text Stream
+            # FFNs
             "img_mlp.net.0.proj", "img_mlp.net.2.proj",
             "txt_mlp.net.0.proj", "txt_mlp.net.2.proj"
         ]
