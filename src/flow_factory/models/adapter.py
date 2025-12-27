@@ -576,21 +576,43 @@ class BaseAdapter(ABC):
         """Context manager for FSDP full state dict gathering."""
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         from torch.distributed.fsdp import StateDictType, FullStateDictConfig
+
+        original_timeout = os.environ.get('NCCL_TIMEOUT') # Default 10 minutes
+        # Extend NCCL timeout for large models if needed
+        timeout_minutes = 10
+        os.environ['NCCL_TIMEOUT'] = str(timeout_minutes * 60)
         
-        with FSDP.state_dict_type(
-            model,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
-        ):
-            yield
+        try:
+            with FSDP.state_dict_type(
+                model,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
+            ):
+                yield
+        finally:
+            if original_timeout is not None:
+                os.environ['NCCL_TIMEOUT'] = original_timeout
+            else:
+                os.environ.pop('NCCL_TIMEOUT', None)
 
     @contextmanager
     def _deepspeed_zero3_save_context(self, model: torch.nn.Module):
         """Context manager for DeepSpeed ZeRO-3 state dict gathering."""
         # Not Tested. Use with caution.
         from deepspeed.runtime.zero import GatheredParameters
-        with GatheredParameters(list(model.parameters()), modifier_rank=0):
-            yield
+        original_timeout = os.environ.get('NCCL_TIMEOUT')
+        # Extend NCCL timeout for large models if needed
+        timeout_minutes = 10
+        os.environ['NCCL_TIMEOUT'] = str(timeout_minutes * 60)
+
+        try:
+            with GatheredParameters(list(model.parameters()), modifier_rank=0):
+                yield
+        finally:
+            if original_timeout is not None:
+                os.environ['NCCL_TIMEOUT'] = original_timeout
+            else:
+                os.environ.pop('NCCL_TIMEOUT', None)
 
     def _get_state_dict(
         self,
