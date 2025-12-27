@@ -4,10 +4,12 @@ from __future__ import annotations
 import os
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from PIL import Image
+
+from accelerate import Accelerator
 import torch
 from diffusers.pipelines.flux2.pipeline_flux2 import Flux2Pipeline, format_input, compute_empirical_mu
 from diffusers.pipelines.flux2.system_messages import SYSTEM_MESSAGE, SYSTEM_MESSAGE_UPSAMPLING_T2I, SYSTEM_MESSAGE_UPSAMPLING_I2I
-from PIL import Image
 import logging
 
 from ..adapter import BaseAdapter, BaseSample
@@ -226,6 +228,9 @@ class Flux2Adapter(BaseAdapter):
         else:
             has_images = False
 
+        device = self.pipeline.text_encoder.device
+        dtype = self.pipeline.text_encoder.dtype
+
         # Case 1: batch process when no images
         if not has_images:
             final_prompts = (
@@ -237,10 +242,10 @@ class Flux2Adapter(BaseAdapter):
                 ) if caption_upsample_temperature else prompt
             )
             input_kwargs = kwargs.copy()
-            input_kwargs = {'device': self.pipeline.text_encoder.device}
+            input_kwargs = {'device': device, 'dtype': dtype}
             batch = self.encode_prompt(
                 prompt=final_prompts,
-                **input_kwargs
+                **filter_kwargs(self.encode_prompt, **input_kwargs)
             )
             return batch
         
@@ -264,10 +269,10 @@ class Flux2Adapter(BaseAdapter):
                 if caption_upsample_temperature else p
             )
             input_kwargs = kwargs.copy()
-            input_kwargs = {'device': self.pipeline.text_encoder.device}
+            input_kwargs = {'device': device, 'dtype': dtype}
             prompt_encode_dict = self.encode_prompt(
                 prompt=final_p,
-                **input_kwargs,
+                **filter_kwargs(self.encode_prompt, **input_kwargs)
             )
 
             if len(imgs) == 0 or imgs[0] is None:
@@ -277,7 +282,7 @@ class Flux2Adapter(BaseAdapter):
                 }
             else:
                 input_kwargs = kwargs.copy()
-                input_kwargs = {'device': self.pipeline.vae.device}
+                input_kwargs = {'device': device, 'dtype': dtype}
                 image_encode_dict = self.encode_image(
                     images=imgs,
                     **filter_kwargs(self.encode_image, **input_kwargs)
@@ -298,18 +303,25 @@ class Flux2Adapter(BaseAdapter):
     # Since Flux.2 does not support ragged batches of condition images, we implement a single-sample inference method.
     def _inference(
         self,
-        condition_images: Optional[Union[List[Image.Image], Image.Image]] = None,
+        # Ordinary arguments
+        images: Optional[Union[List[Image.Image], Image.Image]] = None,
         prompt: Union[str, List[str]] = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
         guidance_scale: Optional[float] = 4.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+
+        # Prompt encoding arguments
         prompt_ids: Optional[torch.LongTensor] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
         text_ids: Optional[torch.Tensor] = None,
+
+        # Image encoding arguments
         image_latents: Optional[Union[torch.Tensor, List[Union[None, torch.Tensor]]]] = None,
         image_latent_ids: Optional[Union[torch.Tensor, List[Union[None, torch.Tensor]]]] = None,
+
+        # Other arguments
         attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = 512,
         text_encoder_out_layers: Tuple[int] = (10, 20, 30),
@@ -322,24 +334,24 @@ class Flux2Adapter(BaseAdapter):
         """
 
         # 1. Setup
-        height = height or (self.training_args.resolution[0] if self.training else self.eval_args.resolution[0])
-        width = width or (self.training_args.resolution[1] if self.training else self.eval_args.resolution[1])
-        num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.eval_args.num_inference_steps)
-        guidance_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.eval_args.guidance_scale)
+        height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
+        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])
+        num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
+        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         device = self.device
 
         # 2. Preprocess inputs
         if (
             (prompt is not None and (prompt_embeds is None or text_ids is None))
-            or (condition_images is not None and (image_latents is None or image_latent_ids is None))
+            or (images is not None and (image_latents is None or image_latent_ids is None))
         ):
             if isinstance(prompt, str):
                 prompt = [prompt]
-            if isinstance(condition_images, Image.Image):
-                condition_images = [condition_images]
+            if isinstance(images, Image.Image):
+                images = [images]
             encode_dict = self.preprocess_func(
                 prompt=prompt,
-                images=condition_images,
+                images=images,
                 device=device,
                 text_encoder_out_layers=text_encoder_out_layers,
                 max_sequence_length=max_sequence_length,
@@ -428,25 +440,32 @@ class Flux2Adapter(BaseAdapter):
                     all_log_probs.append(output.log_prob)
 
         # 6. Decode latents to images
-        images = self.decode_latents(latents, latent_ids)
+        decoded_images = self.decode_latents(latents, latent_ids)
 
         # 7. Create samples
         samples = [
             Flux2Sample(
+                # Denoising trajectory
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+
+                # Generated image & metadata
                 height=height,
                 width=width,
+                image=decoded_images[b],
+                latent_ids=latent_ids[b],
+
+                # Prompt & condition info
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b],
                 prompt_embeds=prompt_embeds[b],
-                latent_ids=latent_ids[b],
                 text_ids=text_ids[b],
-                condition_images=condition_images if condition_images is not None else None,
+
+                # Condition images & latents
+                condition_images=images if images is not None else None,
                 image_latents=image_latents[b] if image_latents is not None else None,
                 image_latent_ids=image_latent_ids[b] if image_latent_ids is not None else None,
-                image=images[b],
-                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
                 extra_kwargs={'guidance_scale': guidance_scale},
             )
             for b in range(batch_size)
@@ -458,8 +477,8 @@ class Flux2Adapter(BaseAdapter):
 
     def inference(
         self,
-        condition_images: Optional[Union[List[Image.Image], List[List[Image.Image]]]] = None,
-        prompt: Union[str, List[str]] = None,
+        images: Optional[Union[List[Image.Image], List[List[Image.Image]]]] = None,
+        prompt: Optional[List[str]] = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
@@ -478,9 +497,9 @@ class Flux2Adapter(BaseAdapter):
     ) -> List[Flux2Sample]:
         # Check if images are given as a batch of image lists
         if (
-            condition_images is not None 
-            and isinstance(condition_images, list)
-            and any(isinstance(i, list) for i in condition_images) # A batch of image lists
+            images is not None 
+            and isinstance(images, list)
+            and any(isinstance(i, list) for i in images) # A batch of image lists
         ):
             if not self._has_warned_inference_fallback:
                 logger.warning(
@@ -488,14 +507,14 @@ class Flux2Adapter(BaseAdapter):
                     "Falling back to single-sample inference. This warning will only appear once."
                 )
                 self._has_warned_inference_fallback = True
-            # Process each sample individually by calling _inference_single
+            # Process each sample individually by calling _inference
             samples = []
             # Expand prompt if needed
             if not isinstance(prompt, list):
-                prompt = [prompt] * len(condition_images)
-            for idx in range(len(condition_images)):
+                prompt = [prompt] * len(images)
+            for idx in range(len(images)):
                 sample = self._inference(
-                    condition_images=condition_images[idx],
+                    images=images[idx],
                     prompt=prompt[idx],
                     height=height,
                     width=width,
@@ -519,7 +538,7 @@ class Flux2Adapter(BaseAdapter):
         else:
             # Images are shared across the batch
             return self._inference(
-                condition_images=condition_images,
+                images=images,
                 prompt=prompt,
                 height=height,
                 width=width,
@@ -540,6 +559,17 @@ class Flux2Adapter(BaseAdapter):
         
 
     # ======================== Forward (Training) ========================
+
+    def _forward(
+        self,
+        sample : Flux2Sample,
+        timestep_index : int,
+        compute_log_prob: bool = True,
+        **kwargs,
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        """Forward method wrapper for single sample."""
+        pass
+
     def forward(
         self,
         samples: List[Flux2Sample],
@@ -548,6 +578,7 @@ class Flux2Adapter(BaseAdapter):
         **kwargs,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Compute log-probabilities for training."""
+        # TODO: The Batch forward may not be supported. Fallback to loop over samples later.
         
         batch_size = len(samples)
         device = self.device

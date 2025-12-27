@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import os
-import math
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-import torch
-from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
 import logging
+
+from accelerate import Accelerator
+import torch
+from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *

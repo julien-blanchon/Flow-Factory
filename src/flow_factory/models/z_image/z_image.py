@@ -178,10 +178,10 @@ class ZImageAdapter(BaseAdapter):
         """Generate images from text prompts using the Z-Image model."""
 
         # 1. Setup
-        height = height or (self.training_args.resolution[0] if self.training else self.eval_args.resolution[0])
-        width = width or (self.training_args.resolution[1] if self.training else self.eval_args.resolution[1])
-        num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.eval_args.num_inference_steps)
-        guidance_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.eval_args.guidance_scale)
+        height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
+        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])
+        num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
+        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         device = self.device
         dtype = self.pipeline.transformer.dtype
         do_classifier_free_guidance = guidance_scale > 1.0

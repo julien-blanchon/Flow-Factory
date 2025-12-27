@@ -1,0 +1,844 @@
+# src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+from __future__ import annotations
+
+import os
+from typing import Union, List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass
+import logging
+import math
+from collections import defaultdict
+
+from PIL import Image
+import torch
+from torch.nn.utils.rnn import pad_sequence
+from accelerate import Accelerator
+from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import QwenImageEditPlusPipeline
+
+from ..adapter import BaseAdapter, BaseSample
+from ...hparams import *
+from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput, set_scheduler_timesteps
+from ...utils.base import filter_kwargs
+from ...utils.logger_utils import setup_logger
+
+
+logger = setup_logger(__name__)
+
+
+@dataclass
+class QwenImageEditPlusSample(BaseSample):
+    """Output class for Qwen-Image-Edit Plus model"""
+    condition_images : Optional[Union[List[Image.Image], Image.Image]] = None
+    prompt_embeds_mask : Optional[torch.FloatTensor] = None
+    negative_prompt_embeds_mask : Optional[torch.FloatTensor] = None
+    img_shapes : Optional[List[Tuple[int, int, int]]] = None
+    image_latents : Optional[torch.Tensor] = None
+
+def retrieve_latents(
+    encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
+):
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    elif hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    else:
+        raise AttributeError("Could not access latents of provided encoder_output")
+
+
+def calculate_dimensions(target_area, ratio):
+    width = math.sqrt(target_area * ratio)
+    height = width / ratio
+
+    width = round(width / 32) * 32
+    height = round(height / 32) * 32
+
+    return width, height
+
+CONDITION_IMAGE_SIZE = 384 * 384
+VAE_IMAGE_SIZE = 1024 * 1024
+
+class QwenImageEditPlusAdapter(BaseAdapter):
+    """Adapter for Qwen-Image-Edit Plus text-to-image models."""
+    
+    def __init__(self, config: Arguments, accelerator : Accelerator):
+        super().__init__(config, accelerator)
+        self._warned_cfg_no_neg_prompt = False
+        self._warned_no_cfg = False
+
+        self._has_warned_inference_fallback = False
+        self._has_warned_preprocess_fallback = False
+    
+    def load_pipeline(self) -> QwenImageEditPlusPipeline:
+        return QwenImageEditPlusPipeline.from_pretrained(
+            self.model_args.model_name_or_path,
+            low_cpu_mem_usage=False
+        )
+    
+    @property
+    def default_target_modules(self) -> List[str]:
+        """Default LoRA target modules for Qwen-Image transformer."""
+        return [
+            # Attention
+            "to_q", "to_k", "to_v", "to_out.0",
+            "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out",
+            # MLP
+            "net.0.proj", "net.2"
+        ]
+    
+    # ================================= Encoding and Decoding Methods ================================= #
+
+    # ---------------------------------- Text Encoding ---------------------------------- #
+    def _get_qwen_prompt_embeds(
+        self,
+        prompt: Union[str, List[str]] = None,
+        image: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+        max_sequence_length: int = 1024,
+    ):
+        device = device or self.pipeline.text_encoder.device
+        dtype = dtype or self.pipeline.text_encoder.dtype
+
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
+        if isinstance(image, list):
+            base_img_prompt = ""
+            for i, img in enumerate(image):
+                base_img_prompt += img_prompt_template.format(i + 1)
+        elif image is not None:
+            base_img_prompt = img_prompt_template.format(1)
+        else:
+            base_img_prompt = ""
+
+        template = self.pipeline.prompt_template_encode
+
+        drop_idx = self.pipeline.prompt_template_encode_start_idx
+        txt = [template.format(base_img_prompt + e) for e in prompt]
+
+        model_inputs = self.pipeline.processor(
+            text=txt,
+            images=image,
+            padding=True,
+            max_length=max_sequence_length + drop_idx,
+            return_tensors="pt",
+        ).to(device)
+        input_ids = model_inputs.input_ids
+
+        outputs = self.pipeline.text_encoder(
+            input_ids=input_ids,
+            attention_mask=model_inputs.attention_mask,
+            pixel_values=model_inputs.pixel_values,
+            image_grid_thw=model_inputs.image_grid_thw,
+            output_hidden_states=True,
+        )
+
+        hidden_states = outputs.hidden_states[-1]
+        split_hidden_states = self.pipeline._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
+        split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
+        attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
+        max_seq_len = max([e.size(0) for e in split_hidden_states])
+        prompt_embeds = torch.stack(
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
+        )
+        encoder_attention_mask = torch.stack(
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
+        )
+
+        prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+
+        input_ids = input_ids[:, drop_idx:] # Extract only user input ids
+
+        return input_ids, prompt_embeds, encoder_attention_mask
+    
+
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]],
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        image : Optional[Union[Image.Image, List[Image.Image]]] = None,
+        max_sequence_length: int = 1024,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+        **kwargs,
+    ) -> Dict[str, Union[torch.LongTensor, torch.Tensor]]:
+        """Encode text prompts using the pipeline's text encoder."""
+
+        device = device or self.pipeline.text_encoder.device
+        dtype = dtype or self.pipeline.text_encoder.dtype
+
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        negative_prompt = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+
+        # Encode positive prompt
+        prompt_ids, prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
+            prompt=prompt,
+            image=image,
+            device=device,
+            dtype=dtype,
+            max_sequence_length=max_sequence_length
+        )
+        prompt_embeds = prompt_embeds[:, :max_sequence_length]
+        prompt_embeds_mask = prompt_embeds_mask[:, :max_sequence_length]
+
+        results = {
+            "prompt_ids": prompt_ids,
+            "prompt_embeds": prompt_embeds,
+            "prompt_embeds_mask": prompt_embeds_mask,
+        }
+        # Encode negative prompt
+        if negative_prompt:
+            negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._get_qwen_prompt_embeds(
+                prompt=negative_prompt,
+                image=image,
+                device=device,
+                dtype=dtype,
+                max_sequence_length=max_sequence_length
+            )
+            results.update({
+                "negative_prompt_ids": negative_prompt_ids,
+                "negative_prompt_embeds": negative_prompt_embeds[:, :max_sequence_length],
+                "negative_prompt_embeds_mask": negative_prompt_embeds_mask[:, :max_sequence_length],
+            })
+
+        return results
+    
+    # ---------------------------------------- Image Encoding ---------------------------------- #
+    def encode_image(
+            self,
+            image: Union[Image.Image, List[Image.Image]],
+            condition_image_size : Optional[Tuple[int, int]] = None,
+            vae_image_size : Optional[Tuple[int, int]] = None,
+            **kwargs
+        ) -> Dict[str, List[Union[torch.Tensor, Image.Image, Tuple[int, int]]]]:
+        """Convert PIL images to latent space using VAE. Returns latents and resized conditioning images."""
+        if condition_image_size is None:
+            # Use self.config.training_args.condition_image_size or self.config.training_args.resolution
+            # condition_image_size = self.config.training_args.extra_kwargs.get('condition_image_size', self.config.training_args.resolution)
+            condition_image_size = self.config.training_args.extra_kwargs.get('condition_image_size', CONDITION_IMAGE_SIZE)
+
+        if vae_image_size is None:
+            # Use self.config.training_args.resolution or self.config.eval_args.resolution
+            if kwargs.get('stage') == 'eval':
+                vae_image_size = self.config.eval_args.resolution
+            else:
+                vae_image_size = self.config.training_args.resolution
+
+        condition_image_sizes = []
+        condition_images = []
+        vae_image_sizes = []
+        vae_images = []
+
+        if not isinstance(image, list):
+            image = [image]
+
+        for img in image:
+            image_width, image_height = img.size
+            condition_width, condition_height = calculate_dimensions(
+                condition_image_size, image_width / image_height
+            )
+            vae_width, vae_height = calculate_dimensions(vae_image_size, image_width / image_height)
+            condition_image_sizes.append((condition_width, condition_height))
+            vae_image_sizes.append((vae_width, vae_height))
+            condition_images.append(self.pipeline.image_processor.resize(img, condition_height, condition_width))
+            vae_images.append(self.pipeline.image_processor.preprocess(img, vae_height, vae_width).unsqueeze(2))
+
+        return {
+            "condition_images": condition_images,
+            "condition_image_sizes": condition_image_sizes,
+            "vae_images": vae_images,
+            "vae_image_sizes": vae_image_sizes,
+        }
+
+    # ---------------------------------------- Video Encoding ---------------------------------- #
+    def encode_video(self, video: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
+        """Not needed for Qwen-Image-Edit models."""
+        pass
+
+    # ---------------------------------------- Image Decoding ---------------------------------- #
+    def decode_latents(self, latents: torch.Tensor, height: int, width: int, **kwargs) -> List[Image.Image]:
+        """Decode latents to images using VAE."""
+        
+        latents = self.pipeline._unpack_latents(latents, height, width, self.pipeline.vae_scale_factor)
+        latents = latents.to(self.pipeline.vae.dtype)
+        latents_mean = (
+            torch.tensor(self.pipeline.vae.config.latents_mean)
+            .view(1, self.pipeline.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = 1.0 / torch.tensor(self.pipeline.vae.config.latents_std).view(1, self.pipeline.vae.config.z_dim, 1, 1, 1).to(
+            latents.device, latents.dtype
+        )
+        latents = latents / latents_std + latents_mean
+        images = self.pipeline.vae.decode(latents, return_dict=False)[0][:, :, 0]
+        images = self.pipeline.image_processor.postprocess(images, output_type='pil')
+
+        return images
+
+    # ========================Preprocessing ========================
+    def preprocess_func(
+        self,
+        prompt: List[str],
+        images: Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]] = None,
+        negative_prompt: Optional[List[str]] = None,
+        **kwargs
+    ) -> Dict[str, List[Any]]:
+        """Preprocess data samples for Qwen-Image-Edit Plus model training or evaluation.
+
+        Args:
+            prompt (List[str]): A Batch of text prompts.
+            images (Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]]): 
+                A batch of conditioning images. Each element can be a PIL Image or a list of PIL Images.                
+        """
+        batch_size = len(prompt)
+        if images is None:
+            images = [None] * batch_size
+        if negative_prompt is None:
+            negative_prompt = [None] * batch_size
+
+        # assert all(isinstance(imgs, list) or imgs is None for imgs in images), \
+        #     "Each element in images must be a list of PIL Images or None."
+
+        dtype = self.pipeline.vae.dtype
+        device = self.pipeline.vae.device
+
+        results = defaultdict(list)
+
+        for p, neg_p, imgs in zip(prompt, negative_prompt, images):
+            input_kwargs = kwargs.copy()
+            input_kwargs = {'device': device, 'dtype': dtype}
+            encoded_prompt = self.encode_prompt(
+                prompt=p,
+                negative_prompt=neg_p,
+                image=imgs,
+                **filter_kwargs(self.encode_prompt, **input_kwargs)
+            )
+            encoded_images = self.encode_image(
+                image=imgs,
+                **filter_kwargs(self.encode_image, **input_kwargs)
+            )
+            for k, v in encoded_prompt.items():
+                results[k].append(v)
+
+            for k, v in encoded_images.items():
+                results[k].append(v)
+
+        return results
+
+
+    # ======================== Padding Utilities ========================
+    def _standardize_data(
+        self,
+        data : Union[None, torch.Tensor, List[torch.Tensor]],
+        padding_value : Union[int, float],
+        device: Optional[torch.device] = None,
+        max_len: Optional[int] = None,
+    ):
+        if data is None: 
+            return None
+        
+        # If data is a list (ragged), pad it into a batch tensor first
+        if isinstance(data, list):
+            # Ensure data is on the correct device before padding
+            if len(data) > 0 and data[0].device != device:
+                data = [t.to(device) for t in data]
+            data = pad_sequence(data, batch_first=True, padding_value=padding_value)
+        else:
+            data = data.to(device)
+        
+        return data[:, :max_len] if data.shape[1] > max_len else data
+
+    def _pad_batch_prompt(
+        self,
+        prompt_embeds_mask: Union[List[torch.LongTensor], torch.LongTensor],
+        prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        device : Optional[torch.device] = None,
+    ) -> Tuple[List[int], Optional[torch.LongTensor], Optional[torch.Tensor], Optional[torch.LongTensor]]:
+        if isinstance(prompt_embeds_mask, list):
+            device = device or prompt_embeds_mask[0].device
+            txt_seq_lens = [mask.sum() for mask in prompt_embeds_mask]
+        else:
+            device = device or prompt_embeds_mask.device
+            txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
+
+        max_pos_len = max(txt_seq_lens)
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
+        padded_prompt_ids = self._standardize_data(
+            prompt_ids,
+            padding_value=pad_token_id,
+            device=device,
+            max_len=max_pos_len,
+        )
+        padded_prompt_embeds = self._standardize_data(
+            prompt_embeds,
+            padding_value=0.0,
+            device=device,
+            max_len=max_pos_len,
+        )
+        padded_prompt_embeds_mask = self._standardize_data(
+            prompt_embeds_mask,
+            padding_value=0,
+            device=device,
+            max_len=max_pos_len,
+        )
+
+        return (
+            txt_seq_lens,
+            padded_prompt_ids,
+            padded_prompt_embeds,
+            padded_prompt_embeds_mask,
+        )
+    
+        # ======================== Sampling / Inference ========================
+
+    # ================================ Inference ================================ #
+
+    # Handle one sample
+    def _inference(
+        self,
+        # Ordinary arguments
+        images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        prompt: Optional[Union[str, List[str]]] = None,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 4.0, # Corresponds to `true_cfg_scale` in Qwen-Image-Edit-Plus-Pipeline.
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+
+        # Prompt encoding arguments
+        prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        negative_prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        negative_prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        
+        # Image encoding arguments
+        condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        vae_images: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        condition_image_sizes: Optional[List[Tuple[int, int]]] = None,
+        vae_image_sizes: Optional[List[Tuple[int, int]]] = None,
+
+        # Other arguments
+        attention_kwargs: Optional[Dict[str, Any]] = {},
+        max_sequence_length: int = 1024,
+        compute_log_prob: bool = False,
+        **kwargs,
+    ):
+        """Generate images using Qwen-Image-Edit Plus model."""
+        # 1. Set up
+
+        # Determine height and width
+        image_size = images[-1].size if isinstance(images, list) else images.size
+        target_resolution = self.config.eval_args.resolution if self.mode == 'eval' else self.config.training_args.resolution
+        target_area = target_resolution[0] * target_resolution[1]
+        calculated_width, calculated_height = calculate_dimensions(target_area, image_size[0] / image_size[1])
+        height = height or calculated_height
+        width = width or calculated_width
+        multiple_of = self.pipeline.vae_scale_factor * 2
+        width = width // multiple_of * multiple_of
+        height = height // multiple_of * multiple_of
+
+        # cfg and others
+        true_cfg_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
+        device = self.device
+        dtype = self.pipeline.transformer.dtype
+        has_neg_prompt = negative_prompt is not None or (
+            negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
+        )
+        do_true_cfg = true_cfg_scale > 1.0 and has_neg_prompt
+
+        if true_cfg_scale > 1 and not has_neg_prompt and not self._warned_cfg_no_neg_prompt:
+            self._warned_cfg_no_neg_prompt = True
+            logger.warning(
+                f"true_cfg_scale is passed as {true_cfg_scale}, but classifier-free guidance is not enabled since no negative_prompt is provided. Warning will only be shown once."
+            )
+        elif true_cfg_scale <= 1 and has_neg_prompt and not self._warned_no_cfg:
+            self._warned_no_cfg = True
+            logger.warning(
+                " negative_prompt is passed but classifier-free guidance is not enabled since true_cfg_scale <= 1. Warning will only be shown once."
+            )
+
+        # 2. Preprocess images
+        if (
+            images is not None
+            and (condition_images is None or vae_images is None or condition_image_sizes is None or vae_image_sizes is None)
+        ):
+            encoded_images = self.encode_image(
+                image=images,
+                condition_image_size=self.config.training_args.extra_kwargs.get('condition_image_size', CONDITION_IMAGE_SIZE),
+                vae_image_size=(height, width),
+                stage=self.mode,
+                device=device,
+                dtype=dtype,
+            )
+            condition_images = encoded_images["condition_images"]
+            condition_image_sizes = encoded_images["condition_image_sizes"]
+            vae_images = encoded_images["vae_images"]
+            vae_image_sizes = encoded_images["vae_image_sizes"]
+        
+        # 3. Encode prompts
+        if prompt_embeds is None or prompt_embeds_mask is None:
+            encoded = self.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                max_sequence_length=max_sequence_length,
+                device=device,
+                dtype=dtype,
+            )
+            prompt_ids = encoded["prompt_ids"]
+            prompt_embeds = encoded["prompt_embeds"]
+            prompt_embeds_mask = encoded["prompt_embeds_mask"]
+            negative_prompt_ids = encoded.get("negative_prompt_ids", None)
+            negative_prompt_embeds = encoded.get("negative_prompt_embeds", None)
+            negative_prompt_embeds_mask = encoded.get("negative_prompt_embeds_mask", None)
+        else:
+            pass
+
+        batch_size = prompt_embeds.shape[0]
+
+        # Truncate prompt embeddings and masks to max valid lengths in the batch
+        txt_seq_lens, prompt_ids, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
+            prompt_embeds_mask,
+            prompt_ids,
+            prompt_embeds,
+            device=device
+        )
+
+        if do_true_cfg:
+            negative_txt_seq_lens, negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
+                negative_prompt_embeds_mask,
+                negative_prompt_ids,
+                negative_prompt_embeds,
+                device=device
+            )
+
+        
+        # 4. Prepare latents
+        num_channels_latents = self.pipeline.transformer.config.in_channels // 4
+        latents, image_latents = self.pipeline.prepare_latents(
+            images=vae_images,
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+            dtype=prompt_embeds.dtype,
+            device=device,
+            generator=generator,
+        )
+        img_shapes = [
+            [
+                (1, height // self.pipeline.vae_scale_factor // 2, width // self.pipeline.vae_scale_factor // 2),
+                *[
+                    (1, vae_height // self.pipeline.vae_scale_factor // 2, vae_width // self.pipeline.vae_scale_factor // 2)
+                    for vae_width, vae_height in vae_image_sizes
+                ],
+            ]
+        ] * batch_size
+
+
+        # 5. Set scheduler timesteps
+        timesteps = set_scheduler_timesteps(
+            scheduler=self.scheduler,
+            num_inference_steps=num_inference_steps,
+            seq_len=latents.shape[1],
+            device=device,
+        )
+
+        guidance = None # Always None for Qwen-Image-Edit Plus
+
+
+        # 6. Denoising loop
+        all_latents = [latents]
+        all_log_probs = [] if compute_log_prob else None
+
+        for i, t in enumerate(timesteps):
+            timestep = t.expand(batch_size).to(latents.dtype)
+            current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
+
+            latent_model_input = latents
+            if image_latents is not None:
+                latent_model_input = torch.cat([latents, image_latents], dim=1) # Concatenate along sequence dimension
+
+            # Conditioned prediction
+            with self.pipeline.transformer.cache_context("cond"):
+                noise_pred = self.transformer(
+                    hidden_states=latent_model_input,
+                    timestep=timestep / 1000,
+                    guidance=guidance,
+                    encoder_hidden_states_mask=prompt_embeds_mask,
+                    encoder_hidden_states=prompt_embeds,
+                    img_shapes=img_shapes,
+                    txt_seq_lens=txt_seq_lens,
+                    attention_kwargs=attention_kwargs,
+                    return_dict=False,
+                )[0]
+                noise_pred = noise_pred[:, : latents.size(1)]
+
+            # Negative conditioned prediction
+            if do_true_cfg:
+                with self.pipeline.transformer.cache_context("uncond"):
+                    neg_noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        encoder_hidden_states_mask=negative_prompt_embeds_mask,
+                        encoder_hidden_states=negative_prompt_embeds,
+                        img_shapes=img_shapes,
+                        txt_seq_lens=negative_txt_seq_lens,
+                        attention_kwargs=attention_kwargs,
+                        return_dict=False,
+                    )[0]
+                neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
+
+                cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
+                noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
+                noise_pred = comb_pred * (cond_norm / noise_norm)
+
+            # Scheduler step
+            output = self.scheduler.step(
+                model_output=noise_pred,
+                timestep=t,
+                sample=latents,
+                compute_log_prob=compute_log_prob and current_noise_level > 0,
+            )
+            
+            latents = output.prev_sample.to(dtype)
+            all_latents.append(latents)
+            
+            if compute_log_prob:
+                all_log_probs.append(output.log_prob)
+
+        # 7. Post-process results
+        decoded_images = self.decode_latents(latents, height, width)
+
+        samples = [
+            QwenImageEditPlusSample(
+                # Denoising trajectory
+                all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
+                timesteps=timesteps,
+                log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
+                
+                # Generated image
+                image=decoded_images[b],
+
+                # Condition images
+                image_latents=image_latents[b] if image_latents is not None else None,
+                condition_images=condition_images[b] if condition_images is not None else None,
+                img_shapes=img_shapes[b],
+
+                # Prompt
+                prompt=prompt[b] if isinstance(prompt, list) else prompt,
+                prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
+                prompt_embeds=prompt_embeds[b] if prompt_embeds is not None else None,
+                prompt_embeds_mask=prompt_embeds_mask[b] if prompt_embeds_mask is not None else None,
+
+                # Negative Prompt
+                negative_prompt=negative_prompt[b] if isinstance(negative_prompt, list) else negative_prompt,
+                negative_prompt_ids=negative_prompt_ids[b] if negative_prompt_ids is not None else None,
+                negative_prompt_embeds=negative_prompt_embeds[b] if negative_prompt_embeds is not None else None,
+                negative_prompt_embeds_mask=negative_prompt_embeds_mask[b] if negative_prompt_embeds_mask is not None else None,
+
+                # Extra kwargs
+                extra_kwargs={
+                    'guidance_scale': true_cfg_scale,
+                    'attention_kwargs': attention_kwargs,
+                }
+            )
+            for b in range(batch_size)
+        ]
+
+        return samples
+
+
+    def inference(
+        self,
+        # Ordinary arguments
+        images: Optional[Union[List[Image.Image], List[List[Image.Image]]]] = None,
+        prompt: Optional[Union[str, List[str]]] = None,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 4.0, # Corresponds to `true_cfg_scale` in Qwen-Image-Edit-Plus-Pipeline.
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+
+        # Prompt encoding arguments
+        prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        negative_prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        negative_prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+        
+        # Image encoding arguments
+        condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        vae_images: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
+        condition_image_sizes: Optional[List[Tuple[int, int]]] = None,
+        vae_image_sizes: Optional[List[Tuple[int, int]]] = None,
+
+        # Other arguments
+        attention_kwargs: Optional[Dict[str, Any]] = {},
+        max_sequence_length: int = 1024,
+        compute_log_prob: bool = False,
+        **kwargs,
+    ):
+        # Check if images are given as a batch of image lists
+        if (
+            images is not None 
+            and isinstance(images, list)
+            and any(isinstance(i, list) for i in images) # A batch of image lists
+        ):
+            if not self._has_warned_inference_fallback:
+                logger.warning(
+                    "FLUX.2 does not support batch inference with varying condition images per sample. "
+                    "Falling back to single-sample inference. This warning will only appear once."
+                )
+                self._has_warned_inference_fallback = True
+            # Process each sample individually by calling _inference
+            all_samples = []
+            if not isinstance(prompt, list):
+                prompt = [prompt] * len(images)
+
+            if not isinstance(negative_prompt, list):
+                negative_prompt = [negative_prompt] * len(images)
+
+            for img_list, p, neg_p in zip(images, prompt, negative_prompt):
+                sample = self._inference(
+                    images=img_list,
+                    prompt=p,
+                    negative_prompt=neg_p,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    height=height,
+                    width=width,
+                    generator=generator,
+                    prompt_ids=prompt_ids,
+                    prompt_embeds=prompt_embeds,
+                    prompt_embeds_mask=prompt_embeds_mask,
+                    negative_prompt_ids=negative_prompt_ids,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+                    condition_images=condition_images,
+                    vae_images=vae_images,
+                    condition_image_sizes=condition_image_sizes,
+                    vae_image_sizes=vae_image_sizes,
+                    attention_kwargs=attention_kwargs,
+                    max_sequence_length=max_sequence_length,
+                    compute_log_prob=compute_log_prob,
+                    **kwargs,
+                )
+                all_samples.extend(sample)
+            return all_samples
+        else:
+            # Directly call _inference for batch processing, the condition images are shared across the batch
+            return self._inference(
+                images=images,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                height=height,
+                width=width,
+                generator=generator,
+                prompt_ids=prompt_ids,
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=prompt_embeds_mask,
+                negative_prompt_ids=negative_prompt_ids,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_embeds_mask=negative_prompt_embeds_mask,
+                condition_images=condition_images,
+                vae_images=vae_images,
+                condition_image_sizes=condition_image_sizes,
+                vae_image_sizes=vae_image_sizes,
+                attention_kwargs=attention_kwargs,
+                max_sequence_length=max_sequence_length,
+                compute_log_prob=compute_log_prob,
+                **kwargs,
+            )
+
+
+
+    # ======================== Forward for training ========================
+
+    def _forward(
+        self,
+        sample: QwenImageEditPlusSample,
+        timestep_index : int,
+        compute_log_prob: bool = True,
+        **kwargs,
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        pass
+
+    def forward(
+        self,
+        samples: List[QwenImageEditPlusSample],
+        timestep_index : int,
+        compute_log_prob: bool = True,
+        **kwargs,
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        
+        # 1. Extract data from samples
+        batch_size = len(samples)
+        device = self.device
+        dtype = self.pipeline.transformer.dtype
+        # Assume all samples have the same guidance scale
+        true_cfg_scale = samples[0].extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
+        # Assume all samples have the same attention kwargs
+        attention_kwargs = samples[0].extra_kwargs.get('attention_kwargs', {})
+
+        latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
+        next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
+        timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
+        num_inference_steps = len(samples[0].timesteps)
+
+        prompt_embeds = [s.prompt_embeds for s in samples]
+        prompt_embeds_mask = [s.prompt_embeds_mask for s in samples]
+        image_latents = torch.stack(
+            [s.image_latents for s in samples], dim=0
+        ) if samples[0].image_latents is not None else None
+
+        # Assume all samples have negative prompt embeds if any sample has it
+        has_neg_prompt = all(
+            s.negative_prompt_embeds is not None and s.negative_prompt_embeds_mask is not None
+            for s in samples
+        )
+        do_true_cfg = true_cfg_scale > 1.0 and has_neg_prompt
+
+        if do_true_cfg:
+            negative_prompt_embeds = [s.negative_prompt_embeds for s in samples]
+            negative_prompt_embeds_mask = [s.negative_prompt_embeds_mask for s in samples]
+    
+        img_shapes = [s.img_shapes for s in samples]
+
+        # Truncate prompt embeddings and masks to max valid lengths in the batch
+        txt_seq_lens, _, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
+            prompt_embeds_mask=prompt_embeds_mask,
+            prompt_ids=None,
+            prompt_embeds=prompt_embeds,
+            device=device
+        )
+        
+        if do_true_cfg:
+            negative_txt_seq_lens, _, negative_prompt_embeds, negative_prompt_embeds_mask = self._pad_batch_prompt(
+                prompt_embeds_mask=negative_prompt_embeds_mask,
+                prompt_ids=None,
+                prompt_embeds=negative_prompt_embeds,
+                device=device
+            )
+        else:
+            negative_prompt_embeds = None
+            negative_prompt_embeds_mask = None
+
+        guidance = None # Always None for Qwen-Image
+
+        # 2. Set scheduler timesteps
+        _ = set_scheduler_timesteps(
+            scheduler=self.scheduler,
+            num_inference_steps=num_inference_steps,
+            seq_len=latents.shape[1],
+            device=device
+        )

@@ -77,7 +77,7 @@ class GRPOTrainer(BaseTrainer):
             with torch.no_grad(), self.autocast():
                     sample_kwargs = {
                         'compute_log_prob': True,
-                        **self.training_args.to_dict(),
+                        **self.training_args,
                     }
                     sample_kwargs.update(**batch)
                     sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
@@ -320,7 +320,7 @@ class GRPOTrainer(BaseTrainer):
                 inference_kwargs = {
                     'compute_log_prob': False,
                     'generator': generator,
-                    **self.eval_args.to_dict(),
+                    **self.eval_args,
                 }
                 inference_kwargs.update(**batch)
                 inference_kwargs = filter_kwargs(self.adapter.inference, **inference_kwargs)

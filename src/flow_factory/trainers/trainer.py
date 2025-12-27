@@ -38,15 +38,15 @@ class BaseTrainer(ABC):
         self.epoch = 0
         self.step = 0
 
+        self._initialization()
+        self.adapter.post_init()
+        self._init_logging_backend()
+
         self.autocast = partial(
             torch.autocast,
             device_type=accelerator.device.type,
             dtype=torch.float16 if accelerator.mixed_precision == "fp16" else torch.bfloat16
         )
-
-        self._initialization()
-        self.adapter.post_init()
-        self._init_logging_backend()
 
         if self.accelerator.is_local_main_process:
             self.adapter.log_trainable_parameters()

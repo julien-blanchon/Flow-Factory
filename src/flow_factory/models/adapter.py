@@ -95,6 +95,7 @@ class BaseAdapter(ABC):
         self.model_args = config.model_args
         self.training_args = config.training_args
         self.eval_args = config.eval_args
+        self._mode : str = 'train' # ['train', 'eval', 'rollout']
 
         # Load pipeline and scheduler (delegated to subclasses)
         self.pipeline = self.load_pipeline()
@@ -293,8 +294,16 @@ class BaseAdapter(ABC):
         return torch.float32
 
     # ============================== Mode Management ==============================
+
+    @property
+    def mode(self) -> str:
+        """Get current mode."""
+        return self._mode
+
     def eval(self):
         """Set model to evaluation mode."""
+        self._mode = 'eval'
+
         for transformer in self.transformers:
             transformer.eval()
 
@@ -303,6 +312,8 @@ class BaseAdapter(ABC):
 
     def rollout(self, *args, **kwargs):
         """Set the model to rollout mode if applicable. Base implementation sets `transformer` to eval mode and try to set scheduler to rollout mode."""
+        self._mode = 'rollout'
+
         for transformer in self.transformers:
             transformer.eval()
         
@@ -311,6 +322,7 @@ class BaseAdapter(ABC):
 
     def train(self, mode: bool = True):
         """Set model to training mode."""
+        self._mode = 'train' if mode else 'eval'
         for transformer in self.transformers:
             transformer.train(mode)
 
@@ -629,7 +641,7 @@ class BaseAdapter(ABC):
         """
         if self._is_fsdp_full_shard():
             with self._fsdp_full_shard_save_context(model):
-                state_dict = model.state_dict() if self.accelerator.is_main_process else None
+                state_dict = model.state_dict()
         elif self._is_zero3():
             with self._deepspeed_zero3_save_context(model):
                 state_dict = model.state_dict()

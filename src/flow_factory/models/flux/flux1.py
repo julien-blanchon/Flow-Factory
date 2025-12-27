@@ -4,10 +4,12 @@ from __future__ import annotations
 import os
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-import torch
-from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 from PIL import Image
 import logging
+
+from accelerate import Accelerator
+import torch
+from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
@@ -128,10 +130,10 @@ class Flux1Adapter(BaseAdapter):
         """Execute generation and return FluxSample objects."""
         
         # 1. Setup
-        height = height or (self.training_args.resolution[0] if self.training else self.eval_args.resolution[0])
-        width = width or (self.training_args.resolution[1] if self.training else self.eval_args.resolution[1])
-        num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.eval_args.num_inference_steps)
-        guidance_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.eval_args.guidance_scale)
+        height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
+        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])
+        num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
+        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         device = self.device
         
         # 2. Encode prompts if not provided

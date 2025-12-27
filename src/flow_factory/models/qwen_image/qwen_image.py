@@ -4,11 +4,13 @@ from __future__ import annotations
 import os
 from typing import Union, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+import logging
+
+from PIL import Image
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from diffusers.pipelines.qwenimage.pipeline_qwenimage import QwenImagePipeline
-from PIL import Image
-import logging
+from accelerate import Accelerator
 
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
@@ -97,14 +99,14 @@ class QwenImageAdapter(BaseAdapter):
         return input_ids, prompt_embeds, encoder_attention_mask
     
     def encode_prompt(
-            self,
-            prompt: Union[str, List[str]],
-            negative_prompt: Optional[Union[str, List[str]]] = None,
-            max_sequence_length: int = 1024,
-            device: Optional[torch.device] = None,
-            dtype: Optional[torch.dtype] = None,
-            **kwargs
-        ) -> Dict[str, Union[torch.LongTensor, torch.Tensor]]:
+        self,
+        prompt: Union[str, List[str]],
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        max_sequence_length: int = 1024,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+        **kwargs
+    ) -> Dict[str, Union[torch.LongTensor, torch.Tensor]]:
         """Encode text prompts using the pipeline's text encoder."""
 
         device = device or self.pipeline.text_encoder.device
@@ -171,6 +173,7 @@ class QwenImageAdapter(BaseAdapter):
 
         return images
     
+    # ======================== Padding Utilities ========================
     def _standardize_data(
         self,
         data : Union[None, torch.Tensor, List[torch.Tensor]],
@@ -237,6 +240,7 @@ class QwenImageAdapter(BaseAdapter):
     # ======================== Inference ========================
     def inference(
         self,
+        # Ordinary arguments
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
         num_inference_steps: int = 50,
@@ -244,23 +248,28 @@ class QwenImageAdapter(BaseAdapter):
         height: Optional[int] = None,
         width: Optional[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+
+        # Prompt encoding arguments
         prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         negative_prompt_ids: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
         negative_prompt_embeds: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
         negative_prompt_embeds_mask: Optional[Union[List[torch.LongTensor], torch.LongTensor]] = None,
+
+        # Other arguments
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
         **kwargs,
     ):
         # 1. Prepare inputs
-        height = height or (self.training_args.resolution[0] if self.training else self.eval_args.resolution[0])
-        width = width or (self.training_args.resolution[1] if self.training else self.eval_args.resolution[1])
-        num_inference_steps = num_inference_steps or (self.training_args.num_inference_steps if self.training else self.eval_args.num_inference_steps)
+        height = height or (self.eval_args.resolution[0] if self.mode == 'eval' else self.training_args.resolution[0])
+        width = width or (self.eval_args.resolution[1] if self.mode == 'eval' else self.training_args.resolution[1])
+        num_inference_steps = num_inference_steps or (self.eval_args.num_inference_steps if self.mode == 'eval' else self.training_args.num_inference_steps)
+        guidance_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         # Qwen-Image uses `true_cfg_scale` since it is not a guidance-distilled model.
-        true_cfg_scale = guidance_scale or (self.training_args.guidance_scale if self.training else self.eval_args.guidance_scale)
+        true_cfg_scale = guidance_scale or (self.eval_args.guidance_scale if self.mode == 'eval' else self.training_args.guidance_scale)
         device = self.device
         dtype = self.pipeline.transformer.dtype
         has_neg_prompt = negative_prompt is not None or (
@@ -280,7 +289,7 @@ class QwenImageAdapter(BaseAdapter):
             )
 
         # 2. Get prompt embeddings
-        if prompt_embeds is None:
+        if prompt_embeds is None or prompt_embeds_mask is None:
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -395,30 +404,35 @@ class QwenImageAdapter(BaseAdapter):
                 all_log_probs.append(output.log_prob)
 
         # 6. Decode latents to images
-        images = self.decode_latents(latents, height, width)
+        decoded_images = self.decode_latents(latents, height, width)
 
         # 7. Prepare output samples
         samples = [
             QwenImageSample(
+                # Denoising trajectory
                 all_latents=torch.stack([lat[b] for lat in all_latents], dim=0),
                 timesteps=timesteps,
                 log_probs=torch.stack([lp[b] for lp in all_log_probs], dim=0) if compute_log_prob else None,
                 
+                # Generated image & metadata
                 height=height,
                 width=width,
-                image=images[b],
+                image=decoded_images[b],
                 img_shapes=img_shapes[b],
 
+                # Prompt info
                 prompt=prompt[b] if isinstance(prompt, list) else prompt,
                 prompt_ids=prompt_ids[b] if prompt_ids is not None else None,
                 prompt_embeds=prompt_embeds[b],
                 prompt_embeds_mask=prompt_embeds_mask[b],
                 
+                # Negative prompt info
                 negative_prompt=negative_prompt[b] if isinstance(negative_prompt, list) else negative_prompt,
                 negative_prompt_ids=negative_prompt_ids[b] if negative_prompt_ids is not None else None,
                 negative_prompt_embeds=negative_prompt_embeds[b] if negative_prompt_embeds is not None else None,
                 negative_prompt_embeds_mask=negative_prompt_embeds_mask[b] if negative_prompt_embeds_mask is not None else None,
 
+                # Extra kwargs
                 extra_kwargs={
                     'guidance_scale': true_cfg_scale,
                     'attention_kwargs': attention_kwargs,
