@@ -620,6 +620,7 @@ class BaseAdapter(ABC):
         if dtype is not None and state_dict is not None:
             state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
         
+        self.accelerator.wait_for_everyone()
         return state_dict
 
     @staticmethod
@@ -652,7 +653,6 @@ class BaseAdapter(ABC):
         if self._is_zero3() or self._is_fsdp_full_shard():
             # Gather all params before saving
             state_dict = self._get_state_dict(model, dtype=dtype)
-            self.accelerator.wait_for_everyone()
             # Filter LoRA params
             lora_state_dict = self._filter_lora_state_dict(state_dict)
             if self.accelerator.is_main_process:
