@@ -67,6 +67,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         self._warned_no_cfg = False
 
         self._has_warned_inference_fallback = False
+        self._has_warned_forward_fallback = False
         self._has_warned_preprocess_fallback = False
     
     def load_pipeline(self) -> QwenImageEditPlusPipeline:
@@ -694,7 +695,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         ):
             if not self._has_warned_inference_fallback:
                 logger.warning(
-                    "FLUX.2 does not support batch inference with varying condition images per sample. "
+                    "Qwen-Image-Edit-Plus does not support batch inference with varying condition images per sample. "
                     "Falling back to single-sample inference. This warning will only appear once."
                 )
                 self._has_warned_inference_fallback = True
@@ -764,60 +765,66 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
     # ======================== Forward for training ========================
 
-    def _forward(
+    def _t2i_forward(
+        self,
+        samples: Union[QwenImageEditPlusSample, List[QwenImageEditPlusSample]],
+        timestep_index : int,
+        compute_log_prob: bool = True,
+        **kwargs,
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        """Forward method for text-to-image generation with Qwen-Image-Edit Plus model."""
+        """
+            TODO in the future if needed.
+        """
+        pass
+
+    def _i2i_forward(
         self,
         sample: QwenImageEditPlusSample,
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        pass
-
-    def forward(
-        self,
-        samples: List[QwenImageEditPlusSample],
-        timestep_index : int,
-        compute_log_prob: bool = True,
-        **kwargs,
-    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
-        
+        """Forward method for image-to-image editing with Qwen-Image-Edit Plus model."""
         # 1. Extract data from samples
-        batch_size = len(samples)
+        batch_size = 1
         device = self.device
         dtype = self.pipeline.transformer.dtype
         # Assume all samples have the same guidance scale
-        true_cfg_scale = samples[0].extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
+        true_cfg_scale = sample.extra_kwargs.get('guidance_scale', self.training_args.guidance_scale)
         # Assume all samples have the same attention kwargs
-        attention_kwargs = samples[0].extra_kwargs.get('attention_kwargs', {})
+        attention_kwargs = sample.extra_kwargs.get('attention_kwargs', {})
 
-        latents = torch.stack([s.all_latents[timestep_index] for s in samples], dim=0).to(device)
-        next_latents = torch.stack([s.all_latents[timestep_index + 1] for s in samples], dim=0).to(device)
-        timestep = torch.stack([s.timesteps[timestep_index] for s in samples], dim=0).to(device)
-        num_inference_steps = len(samples[0].timesteps)
+        latents = sample.all_latents[timestep_index].unsqueeze(0).to(device)
+        next_latents = sample.all_latents[timestep_index + 1].unsqueeze(0).to(device)
+        timestep = sample.timesteps[timestep_index].unsqueeze(0).to(device)
+        t = timestep[0]
+        num_inference_steps = len(sample.timesteps)
 
-        prompt_embeds = [s.prompt_embeds for s in samples]
-        prompt_embeds_mask = [s.prompt_embeds_mask for s in samples]
-        image_latents = torch.stack(
-            [s.image_latents for s in samples], dim=0
-        ) if samples[0].image_latents is not None else None
+        prompt_embeds = [sample.prompt_embeds]
+        prompt_embeds_mask = [sample.prompt_embeds_mask]
+        image_latents = sample.image_latents.unsqueeze(0) if sample.image_latents is not None else None
+
+        negative_prompt_embeds = sample.negative_prompt_embeds
+        negative_prompt_embeds_mask = sample.negative_prompt_embeds_mask
 
         # Assume all samples have negative prompt embeds if any sample has it
-        has_neg_prompt = all(
-            s.negative_prompt_embeds is not None and s.negative_prompt_embeds_mask is not None
-            for s in samples
+        has_neg_prompt = (
+            negative_prompt_embeds is not None
+            and negative_prompt_embeds_mask is not None
         )
         do_true_cfg = true_cfg_scale > 1.0 and has_neg_prompt
 
         if do_true_cfg:
-            negative_prompt_embeds = [s.negative_prompt_embeds for s in samples]
-            negative_prompt_embeds_mask = [s.negative_prompt_embeds_mask for s in samples]
+            negative_prompt_embeds = [sample.negative_prompt_embeds]
+            negative_prompt_embeds_mask = [sample.negative_prompt_embeds_mask]
     
-        img_shapes = [s.img_shapes for s in samples]
+        img_shapes = [sample.img_shapes]
 
-        # Truncate prompt embeddings and masks to max valid lengths in the batch
+        # Get txt_seq_lens
         txt_seq_lens, _, prompt_embeds, prompt_embeds_mask = self._pad_batch_prompt(
             prompt_embeds_mask=prompt_embeds_mask,
-            prompt_ids=None,
+            prompt_ids=None, # prompt_ids are not needed for forward
             prompt_embeds=prompt_embeds,
             device=device
         )
@@ -829,11 +836,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 prompt_embeds=negative_prompt_embeds,
                 device=device
             )
-        else:
-            negative_prompt_embeds = None
-            negative_prompt_embeds_mask = None
 
-        guidance = None # Always None for Qwen-Image
+        guidance = None # Always None for Qwen-Image, use `true_cfg_scale` instead
 
         # 2. Set scheduler timesteps
         _ = set_scheduler_timesteps(
@@ -842,3 +846,93 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             seq_len=latents.shape[1],
             device=device
         )
+
+        # 3. Compute model output
+        latent_model_input = latents
+        if image_latents is not None:
+            latent_model_input = torch.cat([latents, image_latents], dim=1) # Concatenate along sequence dimension
+
+        # Conditioned prediction
+        with self.pipeline.transformer.cache_context("cond"):
+            noise_pred = self.transformer(
+                hidden_states=latent_model_input,
+                timestep=timestep / 1000,
+                guidance=guidance,
+                encoder_hidden_states_mask=prompt_embeds_mask,
+                encoder_hidden_states=prompt_embeds,
+                img_shapes=img_shapes,
+                txt_seq_lens=txt_seq_lens,
+                attention_kwargs=attention_kwargs,
+                return_dict=False,
+            )[0]
+            noise_pred = noise_pred[:, : latents.size(1)]
+
+        # Negative conditioned prediction
+        if do_true_cfg:
+            with self.pipeline.transformer.cache_context("uncond"):
+                neg_noise_pred = self.transformer(
+                    hidden_states=latent_model_input,
+                    timestep=timestep / 1000,
+                    guidance=guidance,
+                    encoder_hidden_states_mask=negative_prompt_embeds_mask,
+                    encoder_hidden_states=negative_prompt_embeds,
+                    img_shapes=img_shapes,
+                    txt_seq_lens=negative_txt_seq_lens,
+                    attention_kwargs=attention_kwargs,
+                    return_dict=False,
+                )[0]
+            neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+            comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
+
+            cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
+            noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
+            noise_pred = comb_pred * (cond_norm / noise_norm)
+
+        # Scheduler step
+        output = self.scheduler.step(
+            model_output=noise_pred,
+            timestep=timestep,
+            sample=latents,
+            compute_log_prob=compute_log_prob,
+        )
+
+        return output
+
+    def forward(
+        self,
+        samples: List[QwenImageEditPlusSample],
+        timestep_index : int,
+        compute_log_prob: bool = True,
+        **kwargs,
+    ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        is_i2i = any(
+            s.image_latents is not None
+            for s in samples
+        )
+        if is_i2i:
+            outputs = []
+            for s in samples:
+                out = self._i2i_forward(
+                    sample=s,
+                    timestep_index=timestep_index,
+                    compute_log_prob=compute_log_prob,
+                    **kwargs,
+                )
+                outputs.append(out)
+            
+            outputs = [o.to_dict() for o in outputs]
+            # Concatenate outputs
+            output = FlowMatchEulerDiscreteSDESchedulerOutput.from_dict({
+                k: torch.cat([o[k] for o in outputs], dim=0)
+                for k in outputs[0].keys()
+            })
+        else:
+            # It is weird that a Edit model can inference without condition images, but we allow it for flexibility.
+            output = self._t2i_forward(
+                samples=samples,
+                timestep_index=timestep_index,
+                compute_log_prob=compute_log_prob,
+                **kwargs,
+            )
+
+        return output

@@ -631,11 +631,14 @@ class Flux2Adapter(BaseAdapter):
 
     def _t2i_forward(
         self,
-        samples: List[Flux2Sample],
+        samples: Union[Flux2Sample, List[Flux2Sample]],
         timestep_index : int,
         compute_log_prob: bool = True,
         **kwargs,        
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
+        if not isinstance(samples, list):
+            samples = [samples]
+
         batch_size = len(samples)
         device = self.device
         guidance_scale = [
