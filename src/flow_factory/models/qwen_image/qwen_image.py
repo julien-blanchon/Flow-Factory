@@ -238,6 +238,7 @@ class QwenImageAdapter(BaseAdapter):
         )
 
     # ======================== Inference ========================
+    @torch.no_grad()
     def inference(
         self,
         # Ordinary arguments

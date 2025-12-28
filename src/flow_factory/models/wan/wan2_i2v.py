@@ -1,4 +1,4 @@
-# src/flow_factory/models/wan/wan22_i2v.py
+# src/flow_factory/models/wan/wan2_i2v.py
 from __future__ import annotations
 
 import os

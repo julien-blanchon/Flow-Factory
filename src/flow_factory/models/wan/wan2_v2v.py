@@ -1,4 +1,4 @@
-# src/flow_factory/models/wan/wan22_i2v.py
+# src/flow_factory/models/wan/wan2_v2v.py
 from __future__ import annotations
 
 import os
@@ -26,7 +26,7 @@ class WanSample(BaseSample):
     pass
 
 
-class Wan2_I2V_Adapter(BaseAdapter):
+class Wan2_V2V_Adapter(BaseAdapter):
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
     

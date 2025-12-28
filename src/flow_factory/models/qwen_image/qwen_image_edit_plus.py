@@ -396,6 +396,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     # ================================ Inference ================================ #
 
     # Handle one sample
+    @torch.no_grad()
     def _inference(
         self,
         # Ordinary arguments
@@ -654,7 +655,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         return samples
 
-
+    @torch.no_grad()
     def inference(
         self,
         # Ordinary arguments

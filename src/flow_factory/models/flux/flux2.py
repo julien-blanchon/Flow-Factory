@@ -302,6 +302,7 @@ class Flux2Adapter(BaseAdapter):
     # ======================== Sampling / Inference ========================
 
     # Since Flux.2 does not support ragged batches of condition images, we implement a single-sample inference method.
+    @torch.no_grad()
     def _inference(
         self,
         # Ordinary arguments
@@ -476,6 +477,7 @@ class Flux2Adapter(BaseAdapter):
         
         return samples
 
+    @torch.no_grad()
     def inference(
         self,
         images: Optional[Union[List[Image.Image], List[List[Image.Image]]]] = None,
