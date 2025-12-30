@@ -7,15 +7,15 @@ mixed_precision: "bf16"  # Options: no, fp16, bf16
 
 run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
-logging_backend: "wandb"  # Options: wandb, swanlab, none
+logging_backend: "swanlab"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  dataset_dir: "dataset/pickscore"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
-  force_reprocess: true  # Force reprocessing of the dataset
+  force_reprocess: false  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
 
@@ -23,8 +23,8 @@ data:
 model:
   finetune_type: 'full' # Options: full, lora
   target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
-  model_name_or_path: "black-forest-labs/FLUX.1-dev"  # HuggingFace model ID or local path
-  model_type: "flux1"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
+  model_name_or_path: "black-forest-labs/FLUX.2-dev"  # HuggingFace model ID or local path
+  model_type: "flux2"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
   resume_path: null # Path to load previous checkpoint/lora adapter
   master_weight_dtype: 'float32' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]
 
@@ -32,7 +32,7 @@ model:
 train:
   # Training settings
   trainer_type: 'grpo'
-  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
 
@@ -51,17 +51,22 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_beta: 0.04 # KL divergence beta
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
-  noise_level: 0.7  # Noise level for sampling
+  noise_level: 1.0  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
-  train_steps: [1]  # Custom noise window
-  guidance_scale: 3.5  # Guidance scale for sampling
+  train_steps: [1, 2, 3]  # Custom noise window
+  guidance_scale: 4  # Guidance scale for sampling
   
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 1.0e-5  # Initial learning rate
+  learning_rate: 1e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -69,13 +74,13 @@ train:
   # EMA
   ema_decay: 0.9  # EMA decay rate (0 to disable)
   ema_update_interval: 4  # EMA update interval (in epochs)
-
+  
 # Evaluation settings
 eval:
-  resolution: 512  # Evaluation resolution
-  per_device_batch_size: 1  # Eval batch size
-  seed: 42  # Eval seed
-  guidance_scale: 3.5  # Guidance scale for sampling
+  resolution: 1024  # Evaluation resolution
+  per_device_batch_size: 4  # Eval batch size
+  seed: 42  # Eval seed (defaults to training seed)
+  guidance_scale: 4  # Guidance scale for sampling
   num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
 

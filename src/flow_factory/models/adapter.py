@@ -1,5 +1,6 @@
 # src/flow_factory/models/adapter.py
 import os
+import re
 import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Tuple, List, Union, Literal
@@ -16,13 +17,41 @@ from diffusers.utils.outputs import BaseOutput
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.models.modeling_utils import ModelMixin
 from peft import get_peft_model, LoraConfig, PeftModel
+
+from huggingface_hub import split_torch_state_dict_into_shards
 from accelerate import Accelerator, DistributedType
+from accelerate.state import PartialState
+from accelerate.utils.modeling import (
+    get_state_dict_offloaded_model,
+)
+from accelerate.utils import (
+    WEIGHTS_NAME,
+    WEIGHTS_PATTERN_NAME,
+    SAFE_WEIGHTS_NAME,
+    SAFE_WEIGHTS_PATTERN_NAME,
+    WEIGHTS_INDEX_NAME,
+    SAFE_WEIGHTS_INDEX_NAME,
+    has_offloaded_params,
+    clean_state_dict_for_safetensors,
+)
+
 
 from ..ema import EMAModuleWrapper
 from ..scheduler import FlowMatchEulerDiscreteSDEScheduler, FlowMatchEulerDiscreteSDESchedulerOutput
 from ..hparams import *
 from ..utils.base import filter_kwargs, is_tensor_list
 from ..utils.logger_utils import setup_logger
+
+
+# Constants
+CONFIG_NAME = "config.json"
+DIFFUSION_WEIGHTS_NAME = "diffusion_pytorch_model.bin"
+DIFFUSION_WEIGHTS_PATTERN_NAME = "diffusion_pytorch_model{suffix}.bin"
+DIFFUSION_WEIGHTS_INDEX_NAME = f"{DIFFUSION_WEIGHTS_NAME}.index.json"
+SAFE_DIFFUSION_WEIGHTS_NAME = "diffusion_pytorch_model.safetensors"
+SAFE_DIFFUSION_WEIGHTS_PATTERN_NAME = "diffusion_pytorch_model{suffix}.safetensors"
+SAFE_DIFFUSION_WEIGHTS_INDEX_NAME = f"{SAFE_DIFFUSION_WEIGHTS_NAME}.index.json"
+
 
 logger = setup_logger(__name__)
 @dataclass
@@ -105,6 +134,13 @@ class BaseAdapter(ABC):
     """
     Abstract Base Class for Flow-Factory models.
     """
+
+    lora_keys: List[str] = [
+            "lora_A", "lora_B",
+            "lora_magnitude_vector",  # DoRA
+            "lora_embedding_A", "lora_embedding_B",  # Embedding LoRA
+            "modules_to_save",  # Additional modules marked for saving
+        ]
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__()
         self.config = config
@@ -623,12 +659,6 @@ class BaseAdapter(ABC):
         """Check if DeepSpeed is enabled."""
         return self._distributed_type == DistributedType.DEEPSPEED
 
-
-    def _is_fsdp(self) -> bool:
-        """Check if FSDP is enabled."""
-        return self._distributed_type == DistributedType.FSDP
-
-
     def _is_zero3(self) -> bool:
         """Check if DeepSpeed ZeRO Stage 3 is enabled."""
         if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
@@ -636,6 +666,13 @@ class BaseAdapter(ABC):
         ds_plugin = self.accelerator.state.deepspeed_plugin
         return ds_plugin is not None and ds_plugin.zero_stage == 3
 
+    def _is_fsdp(self) -> bool:
+        """Check if FSDP is enabled."""
+        return self._distributed_type == DistributedType.FSDP
+
+    def _is_fsdp2(self) -> bool:
+        """Check if FSDP2 is enabled."""
+        return getattr(self.accelerator, 'is_fsdp2', False)
 
     def _is_fsdp_full_shard(self) -> bool:
         """Check if FSDP Full Shard is enabled."""
@@ -648,97 +685,135 @@ class BaseAdapter(ABC):
         from torch.distributed.fsdp import ShardingStrategy
         return fsdp_plugin.sharding_strategy in (
             ShardingStrategy.FULL_SHARD,
-            ShardingStrategy.SHARD_GRAD_OP,
         )
-    
-    @contextmanager
-    def _fsdp_full_shard_save_context(self, model: torch.nn.Module):
-        """Context manager for FSDP full state dict gathering."""
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from torch.distributed.fsdp import StateDictType, FullStateDictConfig
 
-        original_timeout = os.environ.get('NCCL_TIMEOUT') # Default 10 minutes
-        # Extend NCCL timeout for large models if needed
-        timeout_minutes = 60
-        os.environ['NCCL_TIMEOUT'] = str(timeout_minutes * 60)
-        
-        try:
-            with FSDP.state_dict_type(
-                model,
-                StateDictType.FULL_STATE_DICT,
-                FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
-            ):
-                yield
-        finally:
-            if original_timeout is not None:
-                os.environ['NCCL_TIMEOUT'] = original_timeout
-            else:
-                os.environ.pop('NCCL_TIMEOUT', None)
-
-    @contextmanager
-    def _deepspeed_zero3_save_context(self, model: torch.nn.Module):
-        """Context manager for DeepSpeed ZeRO-3 state dict gathering."""
-        # Not Tested. Use with caution.
-        from deepspeed.runtime.zero import GatheredParameters
-        original_timeout = os.environ.get('NCCL_TIMEOUT')
-        # Extend NCCL timeout for large models if needed
-        timeout_minutes = 10
-        os.environ['NCCL_TIMEOUT'] = str(timeout_minutes * 60)
-
-        try:
-            with GatheredParameters(list(model.parameters()), modifier_rank=0):
-                yield
-        finally:
-            if original_timeout is not None:
-                os.environ['NCCL_TIMEOUT'] = original_timeout
-            else:
-                os.environ.pop('NCCL_TIMEOUT', None)
-
-    def _get_state_dict(
+    def get_state_dict(
         self,
-        model: torch.nn.Module,
-        dtype: Optional[torch.dtype] = None,
-    ) -> dict:
+        model,
+        unwrap=True,
+        state_dict_keys: Optional[List[str]] = None,
+        ignore_frozen_params : bool = False,
+    ) -> Dict[str, torch.Tensor]:
         """
-        Get state dict with proper handling for distributed strategies.
-        
-        Handles:
-            - Standard DDP / single GPU
-            - DeepSpeed ZeRO Stage 3 (gathers sharded params)
-            - FSDP Full Shard (gathers sharded params)
+        **Modified from `Accelerator.get_state_dict`**
+        Returns the state dictionary of a model sent through [`Accelerator.prepare`] potentially without full
+        precision.
+
+        Args:
+            model (`torch.nn.Module`):
+                A PyTorch model sent through [`Accelerator.prepare`]
+            unwrap (`bool`, *optional*, defaults to `True`):
+                Whether to return the original underlying state_dict of `model` or to return the wrapped state_dict
+                (e.g. for DeepSpeed or FSDP models).
+            state_dict_keys (`List[str]`, *optional*):
+                If provided, only return the parameters with these keys in the state dict. This is useful for saving with FSDP
+                when you only want to save the trainable parameters.
+            ignore_frozen_params (`bool`, *optional*, defaults to `False`):
+                If `True`, frozen parameters (i.e., those with `requires_grad=False`) will be ignored when saving the state dict.
+                
+        Returns:
+            `dict`: The state dictionary of the model potentially without full precision.
+        ```
         """
-        if self._is_fsdp_full_shard():
-            with self._fsdp_full_shard_save_context(model):
-                state_dict = model.state_dict()
-        elif self._is_zero3():
-            with self._deepspeed_zero3_save_context(model):
+        from accelerate.utils import compare_versions
+
+        if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+            zero3_sharding = self.accelerator.deepspeed_config["zero_optimization"]["stage"] == 3
+            tp_sharding = self.accelerator.deepspeed_config.get("tensor_parallel", {}).get("autotp_size", 0) > 1
+            if zero3_sharding or tp_sharding:
+                if model.zero_gather_16bit_weights_on_model_save():
+                    ver_min_required = "0.16.4"
+                    if tp_sharding and not compare_versions("deepspeed", ">=", ver_min_required):
+                        raise ImportError(
+                            f"Deepspeed TP requires deepspeed>={ver_min_required}. Please update DeepSpeed via `pip install deepspeed -U`."
+                        )
+                    state_dict = (
+                        model._consolidated_16bit_state_dict()
+                        if tp_sharding
+                        else model._zero3_consolidated_16bit_state_dict()
+                    )
+                else:
+                    raise ValueError(
+                        "Cannot get 16bit model weights because `stage3_gather_16bit_weights_on_model_save` in DeepSpeed config is False. "
+                        "To save the model weights in 16bit, set `stage3_gather_16bit_weights_on_model_save` to True in DeepSpeed config file or "
+                        "set `zero3_save_16bit_model` to True when using `accelerate config`. "
+                        "To save the full checkpoint, run `model.save_checkpoint(save_dir)` and use `zero_to_fp32.py` to recover weights."
+                    )
+            else:
+                from deepspeed.checkpoint.utils import clone_tensors_for_torch_save
+
+                state_dict = clone_tensors_for_torch_save(self.accelerator.unwrap_model(model).state_dict())
+        elif self.accelerator.is_fsdp2:
+            from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+            
+            if state_dict_keys is not None or ignore_frozen_params:
+                # Temporarily mark unwanted params as frozen
+                keys_set = set(state_dict_keys) if state_dict_keys is not None else set()
+                original_requires_grad = {}
+                for name, param in model.named_parameters():
+                    if name not in keys_set:
+                        original_requires_grad[name] = param.requires_grad
+                        param.requires_grad = False
+                
+                options = StateDictOptions(
+                    full_state_dict=True, broadcast_from_rank0=True, 
+                    cpu_offload=True, ignore_frozen_params=ignore_frozen_params
+                )
+                state_dict = get_model_state_dict(model, options=options)
+                
+                # Restore
+                for name, param in model.named_parameters():
+                    if name in original_requires_grad:
+                        param.requires_grad = original_requires_grad[name]
+            else:
+                options = StateDictOptions(full_state_dict=True, broadcast_from_rank0=True, cpu_offload=True)
+                state_dict = get_model_state_dict(model, options=options)
+        elif self.accelerator.distributed_type == DistributedType.FSDP:
+            from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+            full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
                 state_dict = model.state_dict()
         else:
-            # Standard case: unwrap and get state dict directly
-            unwrapped = self.accelerator.unwrap_model(model)
-            state_dict = unwrapped.state_dict()
-        
-        # Cast to target dtype if specified (only on main process with valid state_dict)
-        if dtype is not None and state_dict is not None:
-            state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
-        
-        self.accelerator.wait_for_everyone()
-        return state_dict
+            if unwrap:
+                model = self.accelerator.unwrap_model(model)
+            state_dict = model.state_dict()
 
-    @staticmethod
-    def _filter_lora_state_dict(state_dict: dict) -> dict:
-        """Filter state dict to only include LoRA parameters."""
+        state_dict = {
+            k: v for k, v in state_dict.items()
+            if (state_dict_keys is None or k in state_dict_keys)
+               and (not ignore_frozen_params or v.requires_grad)
+        }
+
+        return state_dict
+    
+    @classmethod
+    def _filter_lora_state_dict(
+        cls,
+        state_dict: Dict[str, torch.Tensor],
+        adapter_name: str = "default",
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Filter state dict to only include LoRA parameters.
+        
+        Args:
+            state_dict: Full model state dict
+            adapter_name: Name of the LoRA adapter (default: "default")
+        
+        Returns:
+            State dict containing only LoRA-related weights
+        """
         return {
             k: v for k, v in state_dict.items()
-            if 'lora_' in k or 'modules_to_save' in k
+            if any(lk in k for lk in cls.lora_keys)
         }
     
     # -------------------------------------------- Save ------------------------------------
     def _save_lora(
         self,
         model: torch.nn.Module,
-        save_path: str,
-        dtype: torch.dtype,
+        save_directory: str,
     ) -> None:
         """Save LoRA adapter with distributed training support."""        
         unwrapped = self.accelerator.unwrap_model(model)
@@ -747,74 +822,191 @@ class BaseAdapter(ABC):
             logger.warning(f"Model is not a PeftModel, falling back to full save.")
             self._save_full_model(
                 model,
-                save_path,
-                dtype=dtype,
+                save_directory,
+                safe_serialization=True,
             )
             return
-        
-        if self._is_zero3() or self._is_fsdp_full_shard():
+
+        # If not sharded save, use standard save_pretrained
+        if not (self._is_zero3() or self._is_fsdp_full_shard()):
+            if self.accelerator.is_main_process:
+                unwrapped.save_pretrained(save_directory)
+        else:
+            # Handle sharded save
             # Gather all params before saving
-            state_dict = self._get_state_dict(model, dtype=dtype)
-            # Filter LoRA params
-            lora_state_dict = self._filter_lora_state_dict(state_dict)
+            state_dict = self.get_state_dict(
+                model,
+                unwrap=True,
+                state_dict_keys=self.lora_keys,
+                ignore_frozen_params=True,
+            )
             if self.accelerator.is_main_process:
                 unwrapped.save_pretrained(
-                    save_path,
-                    state_dict=lora_state_dict,
+                    save_directory,
+                    state_dict=state_dict,
                 )
-        else:
-            # Standard save
-            if self.accelerator.is_main_process:
-                unwrapped.save_pretrained(save_path)
+
+        self.accelerator.wait_for_everyone()
 
     def _save_full_model(
         self,
         model: torch.nn.Module,
-        save_path: str,
-        dtype: torch.dtype,
-        max_shard_size: str = "5GB",
+        save_directory: str,
+        max_shard_size: str = "10GB",
+        safe_serialization: bool = True,
+        dtype : Optional[Union[torch.dtype, str]] = None,
     ) -> None:
-        """Save full model weights with distributed training support."""
+        """
+        **Modified from `Accelerator.save_model`**
+        Save full model weights with distributed training support.
+        """
+        if os.path.isfile(save_directory):
+            logger.error(f"Provided path ({save_directory}) should be a directory, not a file")
+            return
+        
+        # Normalize dtype
+        if isinstance(dtype, str):
+            dtype = {
+                'bfloat16': torch.bfloat16,
+                'float16': torch.float16,
+                'float32': torch.float32,
+            }.get(dtype.lower(), torch.bfloat16)
+
         unwrapped = self.accelerator.unwrap_model(model)
-        state_dict = self._get_state_dict(model, dtype=dtype)
+
+        # Check if casting is needed
+        cast_needed = False
+        if dtype is not None:
+            # Try to get model dtype, falling back to parameter inspection
+            model_dtype = getattr(unwrapped, "dtype", None)
+            if model_dtype is None:
+                try:
+                    model_dtype = next(unwrapped.parameters()).dtype
+                except StopIteration:
+                    # Empty model, assume no cast needed
+                    model_dtype = dtype 
+            
+            if model_dtype != dtype:
+                cast_needed = True
         
-        # Only main process saves
-        if not self.accelerator.is_main_process:
+        # Check offload
+        is_offloaded = any(has_offloaded_params(module) for module in unwrapped.modules())
+        
+        # No shard, no casting, no offload, save directyly
+        if (
+            not (self._is_zero3() or self._is_fsdp_full_shard())
+            and not cast_needed
+            and not is_offloaded
+        ):
+            # Standard save
+            if self.accelerator.is_main_process:
+                unwrapped.save_pretrained(
+                    save_directory,
+                    max_shard_size=max_shard_size,
+                    safe_serialization=safe_serialization,
+                )
+            self.accelerator.wait_for_everyone()
             return
-        
+
+        # Get the state_dict of the model
+        if is_offloaded:
+            state_dict = get_state_dict_offloaded_model(model)
+        else:
+            if any(param.device == torch.device("meta") for param in model.parameters()):
+                raise RuntimeError("You can't save the model since some parameters are on the meta device.")
+            state_dict = self.get_state_dict(model, unwrap=True, ignore_frozen_params=False)
+
+        # Case: DeepSpeed zero3 gets gathered and `state_dict` is empty
         if state_dict is None:
-            logger.warning("State dict is None, skipping save")
             return
-        
-        if hasattr(unwrapped, "save_pretrained"):
-            unwrapped.save_pretrained(
-                save_path,
-                state_dict=state_dict,
-                max_shard_size=max_shard_size,
-                safe_serialization=True,
+
+        # Dtype casting
+        if dtype is not None:
+            state_dict = {
+                k: v.to(device='cpu', dtype=dtype) 
+                for k, v in state_dict.items()
+            }
+
+        os.makedirs(save_directory, exist_ok=True)
+
+        if safe_serialization:
+            state_dict = clean_state_dict_for_safetensors(state_dict)
+
+        weights_name = SAFE_DIFFUSION_WEIGHTS_NAME if safe_serialization else DIFFUSION_WEIGHTS_NAME
+        filename_pattern = SAFE_DIFFUSION_WEIGHTS_PATTERN_NAME if safe_serialization else DIFFUSION_WEIGHTS_PATTERN_NAME
+
+        state_dict_split = split_torch_state_dict_into_shards(
+            state_dict, filename_pattern=filename_pattern, max_shard_size=max_shard_size
+        )
+
+        # Clean the folder from a previous save
+        for filename in os.listdir(save_directory):
+            full_filename = os.path.join(save_directory, filename)
+            # If we have a shard file that is not going to be replaced, we delete it, but only from the main process
+            # in distributed settings to avoid race conditions.
+            weights_no_suffix = weights_name.replace(".bin", "")
+
+            # make sure that file to be deleted matches format of sharded file, e.g. pytorch_model-00001-of-00005
+            filename_no_suffix = filename.replace(".bin", "")
+            reg = re.compile(r"(.*?)-\d{5}-of-\d{5}")
+
+            if (
+                filename.startswith(weights_no_suffix)
+                and os.path.isfile(full_filename)
+                and filename not in state_dict_split.filename_to_tensors.keys()
+                and reg.fullmatch(filename_no_suffix) is not None
+                and PartialState().is_main_process
+            ):
+                os.remove(full_filename)
+
+        # Save the model
+        for filename, tensors in state_dict_split.filename_to_tensors.items():
+            shard = {tensor: state_dict[tensor] for tensor in tensors}
+            self.accelerator.save(shard, os.path.join(save_directory, filename), safe_serialization=safe_serialization)
+
+        # Save the config file
+        if hasattr(unwrapped, 'config') and unwrapped.config is not None:
+            config_save_file = os.path.join(save_directory, CONFIG_NAME)
+            if hasattr(unwrapped.config, 'save_pretrained'):
+                unwrapped.config.save_pretrained(save_directory)
+            else:
+                # Handle dict-like configs (e.g., FrozenDict from diffusers)
+                with open(config_save_file, 'w', encoding='utf-8') as f:
+                    json.dump(dict(unwrapped.config), f, indent=2, sort_keys=True)
+            logger.info(f"Model config saved in {config_save_file}")
+
+        # Save index if sharded
+        if state_dict_split.is_sharded:
+            index = {
+                "metadata": state_dict_split.metadata,
+                "weight_map": state_dict_split.tensor_to_filename,
+            }
+            save_index_file = SAFE_DIFFUSION_WEIGHTS_INDEX_NAME if safe_serialization else DIFFUSION_WEIGHTS_INDEX_NAME
+            save_index_file = os.path.join(save_directory, save_index_file)
+            with open(save_index_file, "w", encoding="utf-8") as f:
+                content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                f.write(content)
+            logger.info(
+                f"The model is bigger than the maximum size per checkpoint ({max_shard_size}) and is going to be "
+                f"split in {len(state_dict_split.filename_to_tensors)} checkpoint shards. You can find where each parameters has been saved in the "
+                f"index located at {save_index_file}."
             )
         else:
-            # Fallback to torch save
-            weight_path = os.path.join(save_path, "model.safetensors")
-            save_file(state_dict, weight_path)
-
+            path_to_weights = os.path.join(save_directory, WEIGHTS_NAME)
+            logger.info(f"Model weights saved in {path_to_weights}")
 
     def save_checkpoint(
         self,
         path: str,
-        max_shard_size: str = "5GB",
+        max_shard_size: str = "10GB",
         dtype: Union[torch.dtype, str] = torch.bfloat16,
         save_ema: bool = True,
+        model_only : bool = True,
+        safe_serialization: bool = True,
+        **kwargs,
     ):
         """
         Save checkpoint for target components.
-        
-        Properly handles:
-            - Standard DDP / single GPU
-            - DeepSpeed ZeRO Stage 3
-            - FSDP Full Shard
-            - LoRA adapters
-            - EMA weights
         """
         # Normalize dtype
         if isinstance(dtype, str):
@@ -823,11 +1015,23 @@ class BaseAdapter(ABC):
                 'float16': torch.float16,
                 'float32': torch.float32,
             }.get(dtype.lower(), torch.bfloat16)
-        
+            
+        # 1. Save the training state if not model_only
+        if not model_only:
+            if self.accelerator.is_main_process:
+                logger.info(f"Saving training state (resume-ready) to {path}...")
+            
+            self.accelerator.save_state(path, safe_serialization=safe_serialization, **kwargs)
+            
+            if self.accelerator.is_main_process:
+                logger.info(f"Training state saved.")
+            return
+
+        # 2. Save only model
         # Setup EMA context
         save_context = self.use_ema_parameters if save_ema else nullcontext
         
-        with save_context():            
+        with save_context():
             for comp_name in self.target_module_map.keys():
                 if not hasattr(self, comp_name):
                     logger.warning(f"Component {comp_name} not found, skipping save")
@@ -842,20 +1046,23 @@ class BaseAdapter(ABC):
                     else path
                 )
                 
-                if self.accelerator.is_main_process:
-                    os.makedirs(comp_path, exist_ok=True)
-                
-                self.accelerator.wait_for_everyone()
+                os.makedirs(comp_path, exist_ok=True)
                 
                 # Dispatch to appropriate save method
                 if self.model_args.finetune_type == 'lora':
                     if self.accelerator.is_main_process:
                         logger.info(f"Saving LoRA weights for {comp_name} to {comp_path}")
-                    self._save_lora(component, comp_path, dtype)
+                    self._save_lora(component, comp_path)
                 else:
                     if self.accelerator.is_main_process:
                         logger.info(f"Saving full weights for {comp_name} to {comp_path}")
-                    self._save_full_model(component, comp_path, dtype, max_shard_size)
+                    self._save_full_model(
+                        component,
+                        comp_path,
+                        max_shard_size=max_shard_size,
+                        safe_serialization=safe_serialization,
+                        dtype=dtype,
+                    )
             
             # Sync after saving
             self.accelerator.wait_for_everyone()

@@ -35,7 +35,7 @@ train:
   # Training settings
   trainer_type: 'grpo'
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
-  save_freq: 0  # Save frequency in epochs (0 to disable)
+  save_freq: 20  # Save frequency in epochs (0 to disable)
   save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
 
   # Image settings
@@ -53,10 +53,15 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_beta: 0.04 # KL divergence beta
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
-  num_inference_steps: 8  # Number of SDE timesteps
-  noise_level: 0.7  # Noise level for sampling
+  num_inference_steps: 10  # Number of SDE timesteps
+  noise_level: 1.0  # Noise level for sampling
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window
   guidance_scale: 4  # Guidance scale for sampling
@@ -74,7 +79,7 @@ train:
   
 # Evaluation settings
 eval:
-  resolution: 512  # Evaluation resolution
+  resolution: 1024  # Evaluation resolution
   per_device_batch_size: 4  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 4  # Guidance scale for sampling

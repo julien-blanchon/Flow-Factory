@@ -1,6 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-config_file: config/accelerate_configs/deepspeed_zero2.yaml  # Path to distributed config file (optional)
+config_file: config/accelerate_configs/fsdp_full_shard.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -27,7 +27,7 @@ model:
   model_name_or_path: "Qwen/Qwen-Image"  # HuggingFace model ID or local path
   model_type: "qwen-image"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
   resume_path: null # Path to load previous checkpoint/lora adapter
-  master_weight_dtype: 'float32' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]
+  master_weight_dtype: 'bfloat16' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]. Only works for DDP. Set the same as mixed_precision for FSDP.
 
 # Training Configuration
 train:
@@ -36,6 +36,7 @@ train:
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_dir: "~/jcy/Flow-Factory"  # Directory for logs and checkpoints
+  save_model_only: true # Save only model weights without optimizer states
 
   # Image settings
   resolution: 512  # Can be int or [height, width]
@@ -51,6 +52,11 @@ train:
   clip_range: 1.0e-4  # PPO/GRPO clipping range
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
+
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_beta: 0 # KL divergence beta
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
   
   # Denoising process
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
@@ -73,11 +79,11 @@ train:
   
   # Evaluation settings
 eval:
-  resolution: 512  # Evaluation resolution
-  per_device_batch_size: 1  # Eval batch size
+  resolution: 1024  # Evaluation resolution
+  per_device_batch_size: 4  # Eval batch size
   seed: 42  # Eval seed
   guidance_scale: 4  # Guidance scale for sampling
-  num_inference_steps: 50  # Number of eval timesteps
+  num_inference_steps: 28  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
