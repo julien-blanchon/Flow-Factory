@@ -46,11 +46,6 @@ class ModelArguments(ArgABC):
         metadata={"help": "Which layers to fine-tune. Options are like ['all',  'default', 'to_q', ['to_q', 'to_k', 'to_v']]"}
     )
 
-    resume_path : Optional[str] = field(
-        default=None,
-        metadata={"help": "Resume from checkpoint directory."}
-    )
-
     model_type: Literal["sd3", "flux1", "flux1-kontext", 'flux2', 'qwenimage', 'qwenimage-edit', 'z-image'] = field(
         default="flux1",
         metadata={"help": "Type of model to use."},
@@ -64,6 +59,16 @@ class ModelArguments(ArgABC):
     lora_alpha : Optional[int] = field(
         default=None,
         metadata={"help": "Alpha scaling factor for LoRA adapters. Default to `2 * lora_rank` if None."},
+    )
+
+    resume_path : Optional[str] = field(
+        default=None,
+        metadata={"help": "Resume from checkpoint directory."}
+    )
+
+    resume_training_state : bool = field(
+        default=False,
+        metadata={"help": "Whether to resume training state, only effective when resume_path is a directory with full checkpoint."}
     )
 
     def __post_init__(self):        

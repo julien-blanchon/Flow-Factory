@@ -14,6 +14,7 @@ from .data_args import DataArguments
 from .model_args import ModelArguments
 from .training_args import TrainingArguments, EvaluationArguments
 from .reward_args import RewardArguments
+from .log_args import LogArguments
 
 
 @dataclass
@@ -71,6 +72,10 @@ class Arguments(ArgABC):
         default_factory=EvaluationArguments,
         metadata={"help": "Arguments for evaluation configuration."},
     )
+    log_args: LogArguments = field(
+        default_factory=LogArguments,
+        metadata={"help": "Arguments for logging configuration."},
+    )
 
     def __post_init__(self):
         if self.run_name is None:
@@ -107,6 +112,7 @@ class Arguments(ArgABC):
             'train': ('training_args', TrainingArguments),
             'eval': ('eval_args', EvaluationArguments),
             'reward': ('reward_args', RewardArguments),
+            'log': ('log_args', LogArguments),
         }
 
         # 2. Build init kwargs

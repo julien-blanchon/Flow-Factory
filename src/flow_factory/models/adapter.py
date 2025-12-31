@@ -1041,7 +1041,7 @@ class BaseAdapter(ABC):
 
     def save_checkpoint(
         self,
-        path: str,
+        save_directory: str,
         max_shard_size: str = "10GB",
         dtype: Union[torch.dtype, str] = torch.bfloat16,
         save_ema: bool = True,
@@ -1063,9 +1063,9 @@ class BaseAdapter(ABC):
         # 1. Save the training state if not model_only
         if not model_only:
             if self.accelerator.is_main_process:
-                logger.info(f"Saving training state (resume-ready) to {path}...")
+                logger.info(f"Saving training state (resume-ready) to {save_directory}...")
             
-            self.accelerator.save_state(path, safe_serialization=safe_serialization, **kwargs)
+            self.accelerator.save_state(save_directory, safe_serialization=safe_serialization, **kwargs)
             
             if self.accelerator.is_main_process:
                 logger.info(f"Training state saved.")
@@ -1085,9 +1085,9 @@ class BaseAdapter(ABC):
                 
                 # Determine save path
                 comp_path = (
-                    os.path.join(path, comp_name) 
+                    os.path.join(save_directory, comp_name) 
                     if len(self.model_args.target_components) > 1 
-                    else path
+                    else save_directory
                 )
                 
                 os.makedirs(comp_path, exist_ok=True)
@@ -1112,7 +1112,7 @@ class BaseAdapter(ABC):
             self.accelerator.wait_for_everyone()
         
         if self.accelerator.is_main_process:
-            logger.info(f"Checkpoint saved successfully to {path}")
+            logger.info(f"Checkpoint saved successfully to {save_directory}")
 
     # -------------------------------------------- Load -------------------------------------------
     @staticmethod
@@ -1176,6 +1176,7 @@ class BaseAdapter(ABC):
             )
             
             unwrapped = self.accelerator.unwrap_model(component)
+            component_class = unwrapped.__class__
         
             # Try from_pretrained first
             try:
@@ -1223,8 +1224,8 @@ class BaseAdapter(ABC):
     def load_checkpoint(
         self,
         path: str,
-        model_only: bool = True,
         strict: bool = True,
+        model_only: bool = True,
     ) -> None:
         """
         Load checkpoint for target components.

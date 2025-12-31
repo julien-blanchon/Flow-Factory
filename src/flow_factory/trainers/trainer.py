@@ -30,10 +30,12 @@ class BaseTrainer(ABC):
         ):
         self.accelerator = accelerator
         self.config = config
-        self.data_args = config.data_args
         self.training_args = config.training_args
-        self.reward_args = config.reward_args
         self.eval_args = config.eval_args
+        self.log_args = config.log_args
+        self.reward_args = config.reward_args
+        self.model_args = config.model_args
+
         self.adapter = adapter
         self.epoch = 0
         self.step = 0
@@ -139,11 +141,14 @@ class BaseTrainer(ABC):
         """Evaluation for one epoch."""
         pass
 
-    def save_checkpoint(self, path: str):
+    def save_checkpoint(self, save_directory: str, epoch: Optional[int] = None):
         """Save trainer state to a specific path."""
+        if epoch is not None:
+            save_directory = os.path.join(save_directory, f"checkpoint-{epoch}")
+
         self.adapter.save_checkpoint(
-            path=path,
-            model_only=self.training_args.save_model_only,
+            save_directory=save_directory,
+            model_only=self.log_args.save_model_only,
         )
 
         self.accelerator.wait_for_everyone()
@@ -152,6 +157,7 @@ class BaseTrainer(ABC):
         """Load trainer state from a specific path."""
         self.adapter.load_checkpoint(
             path=path,
-            model_only=self.training_args.load_model_only,
+            strict=True,
+            model_only=not self.model_args.resume_training_state,
         )
         self.accelerator.wait_for_everyone()

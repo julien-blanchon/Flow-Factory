@@ -253,26 +253,6 @@ class TrainingArguments(ArgABC):
         metadata={"help": "Update EMA every N steps."},
     )
 
-    save_freq: int = field(
-        default=10,
-        metadata={"help": "Model saving frequency (in epochs). 0 for no saving."},
-    )
-
-    save_dir: str = field(
-        default='save',
-        metadata={"help": "Directory to save logs and checkpoints. None for no saving."},
-    )
-    
-    save_model_only : bool = field(
-        default=True,
-        metadata={"help": "Whether to save the model only, or the complete training state (model and optimizer)."}
-    )
-
-    load_model_only : bool = field(
-        default=True,
-        metadata={"help": "Whether to load the model only, or the complete training state (model and optimizer)."}
-    )
-
     def __post_init__(self):
         if not self.resolution:
             logger.warning("`resolution` is not set, using default (512, 512).")
@@ -339,11 +319,6 @@ class TrainingArguments(ArgABC):
             else:
                 self.learning_rate = 1e-5
             logger.info(f"`learning_rate` is not set, using default {self.learning_rate} for `{self.trainer_type}` training.")
-
-        # Expand path to user's path
-        self.save_dir = os.path.expanduser(self.save_dir)
-        # If save_dir does not exist, create it
-        os.makedirs(self.save_dir, exist_ok=True)
 
     def to_dict(self) -> dict[str, Any]:
         return super().to_dict()
