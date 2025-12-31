@@ -52,6 +52,9 @@ class PreprocessCallable(Protocol):
 # GeneralDataset Class
 # ========================================================================================
 
+_MAX_FINGERPRINT_LEN = 64
+_SHARD_SUFFIX_RESERVE = 15  # Reserve for "_shardXXofYY"
+
 class GeneralDataset(Dataset):
     """
     General-purpose dataset for multi-modal data (text, images, videos).
@@ -367,34 +370,43 @@ class GeneralDataset(Dataset):
     ) -> str:
         """
         Compute merged cache path without creating dataset instance.
-        
-        Args:
-            dataset_dir: Path to dataset directory
-            split: Dataset split name
-            cache_dir: Cache directory
-            max_dataset_size: Maximum dataset size
-            preprocess_func: Preprocessing function
-            preprocess_kwargs: Preprocessing kwargs
-            
-        Returns:
-            Path to merged cache directory
+        Ensures fingerprint length <= 64 chars (HuggingFace limit).
         """
-        funcs_hash = _compute_encode_funcs_hash(preprocess_func)
+        # Collect all hash components
+        funcs_hash = _compute_encode_funcs_hash(preprocess_func, digits=8)
         kwargs_hash = hashlib.md5(
             str(sorted((preprocess_kwargs or {}).items())).encode()
         ).hexdigest()[:8]
-
         extra_hash = ""
         if extra_hash_strs:
-            extra_combined = "|".join(extra_hash_strs)
-            extra_hash = "_" + hashlib.md5(extra_combined.encode()).hexdigest()[:8]
+            extra_hash = hashlib.md5("|".join(extra_hash_strs).encode()).hexdigest()[:8]
         
-        return os.path.join(
-            os.path.expanduser(cache_dir),
-            f"{os.path.basename(dataset_dir)}_{split}_"
-            f"cutoff{max_dataset_size if max_dataset_size else 'full'}_"
-            f"{funcs_hash}_{kwargs_hash}{extra_hash}"
-        )
+        # Build components
+        dataset_name = os.path.basename(dataset_dir)
+        cutoff_str = str(max_dataset_size) if max_dataset_size else "full"
+        hash_part = f"{funcs_hash}{kwargs_hash}{extra_hash}"
+        
+        # Target length (reserve space for shard suffix)
+        max_len = _MAX_FINGERPRINT_LEN - _SHARD_SUFFIX_RESERVE
+        
+        # Try full descriptive name first
+        fingerprint = f"{dataset_name}_{split}_{cutoff_str}_{hash_part}"
+        
+        if len(fingerprint) <= max_len:
+            return os.path.join(os.path.expanduser(cache_dir), fingerprint)
+        
+        # Truncate dataset_name to fit
+        prefix_budget = max_len - len(f"_{split}_{cutoff_str}_{hash_part}")
+        if prefix_budget >= 4:
+            fingerprint = f"{dataset_name[:prefix_budget]}_{split}_{cutoff_str}_{hash_part}"
+        else:
+            # Fallback: hash everything
+            full_hash = hashlib.md5(
+                f"{dataset_name}|{split}|{cutoff_str}|{hash_part}".encode()
+            ).hexdigest()
+            fingerprint = f"{dataset_name[:8]}_{split}_{full_hash}"[:max_len]
+        
+        return os.path.join(os.path.expanduser(cache_dir), fingerprint)
 
     def save_shard(self, shard_path: str):
         """
