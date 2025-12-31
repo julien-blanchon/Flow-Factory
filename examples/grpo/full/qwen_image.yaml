@@ -30,7 +30,7 @@ model:
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
   master_weight_dtype: 'bfloat16' # Weight dtype for trainable parameters when full-paramter fine-tuning, options are ["float16", "bfloat16", "float32"]. Only works for DDP. Set the same as mixed_precision for FSDP.
 
-output:
+log:
   save_dir: "~/jcy/Flow-Factory"  # Directory to save model checkpoints and logs
   save_freq: 20  # Save frequency in epochs (0 to disable)
   save_model_only: true  # Save only the model weights (not optimizer, scheduler, etc.)

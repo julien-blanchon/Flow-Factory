@@ -18,6 +18,9 @@ _MODEL_ADAPTER_REGISTRY: Dict[str, str] = {
     'flux2': 'flow_factory.models.flux.flux2.Flux2Adapter',
     'qwen-image': 'flow_factory.models.qwen_image.qwen_image.QwenImageAdapter',
     'z-image': 'flow_factory.models.z_image.z_image.ZImageAdapter',
+    'wan2_i2v': 'flow_factory.models.wan.wan2_i2v.Wan2_I2V_Adapter',
+    'wan2_t2v': 'flow_factory.models.wan.wan2_t2v.Wan2_T2V_Adapter',
+    'wan2_v2v': 'flow_factory.models.wan.wan2_v2v.Wan2_V2V_Adapter',
 }
 
 def get_model_adapter_class(identifier: str) -> Type:

@@ -30,7 +30,6 @@ class LogArguments(ArgABC):
 
         # Expand path to user's path
         self.save_dir = os.path.expanduser(self.save_dir)
-        self.resume_path = os.path.expanduser(self.resume_path) if self.resume_path is not None else None
         # If save_dir does not exist, create it
         os.makedirs(self.save_dir, exist_ok=True)
 

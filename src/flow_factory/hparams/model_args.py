@@ -87,6 +87,8 @@ class ModelArguments(ArgABC):
         if self.lora_alpha is None:
             self.lora_alpha = 2 * self.lora_rank
 
+        self.resume_path = os.path.expanduser(self.resume_path) if self.resume_path is not None else None
+
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
         d['master_weight_dtype'] = str(self.master_weight_dtype).split('.')[-1]

@@ -35,7 +35,6 @@ class Wan2_T2V_Adapter(BaseAdapter):
     def load_pipeline(self) -> WanPipeline:
         return WanPipeline.from_pretrained(
             self.model_args.model_name_or_path,
-            low_cpu_mem_usage=False
         )
     
     @property
@@ -174,7 +173,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
                 dtype=dtype,
             )
             results.update({
-                "negative_prompt_ids": negative_prompt_ids
+                "negative_prompt_ids": negative_prompt_ids,
                 "negative_prompt_embeds": negative_prompt_embeds
             })
 
@@ -292,7 +291,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
             height=height,
             width=width,
             num_frames=num_frames,
-            dtype=torch.float32
+            dtype=torch.float32,
             device=device,
             generator=generator,
         )

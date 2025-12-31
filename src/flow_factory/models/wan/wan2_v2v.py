@@ -33,7 +33,6 @@ class Wan2_V2V_Adapter(BaseAdapter):
     def load_pipeline(self) -> WanVideoToVideoPipeline:
         return WanVideoToVideoPipeline.from_pretrained(
             self.model_args.model_name_or_path,
-            low_cpu_mem_usage=False
         )
     
     @property
