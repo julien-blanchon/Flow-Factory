@@ -9,7 +9,7 @@ fsdp_config:
   fsdp_offload_params: false
   fsdp_reshard_after_forward: true # FULL_SHARD. `false` for SHARD_GRAD_OP
   fsdp_state_dict_type: FULL_STATE_DICT
-  fsdp_cpu_ram_efficient_loading: false # Set false
+  fsdp_cpu_ram_efficient_loading: false # Set false here. It makes all ranks have the copy of unsharded params during loading for preprocessing.
   fsdp_activation_checkpointing: true 
   fsdp_sync_module_states: true
 machine_rank: 0

@@ -112,9 +112,9 @@ class BaseTrainer(ABC):
 
     def _initialization(self):
         # Fix for FSDP2 / FSDP Full Shard, synchronize frozen components like text encoder & VAE. Otherwise they may be uninitialized on Rank > 0.
-        if self.adapter._is_param_sharded():
-            self.adapter.on_load(self.accelerator.device)
-            self._synchronize_frozen_components()
+        # if self.adapter._is_param_sharded():
+        #     self.adapter.on_load(self.accelerator.device)
+        #     self._synchronize_frozen_components()
 
         # Init dataloader and optimizer
         self.dataloader, self.test_dataloader = self._init_dataloader()
