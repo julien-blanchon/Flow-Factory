@@ -88,6 +88,8 @@ class GeneralDataset(Dataset):
         num_shards: Optional[int] = None,
         shard_index: Optional[int] = None,
         extra_hash_strs: Optional[List[str]] = None,
+        image_dir: Optional[str] = None,
+        video_dir: Optional[str] = None,
         **kwargs
     ):
         """
@@ -113,6 +115,8 @@ class GeneralDataset(Dataset):
         self.split = split
         self.num_shards = num_shards
         self.shard_index = shard_index
+        self.image_dir = image_dir
+        self.video_dir = video_dir
 
         if self.shard_index > 0:
             # Disable progress bar for non-main processes
@@ -148,14 +152,14 @@ class GeneralDataset(Dataset):
         
         if os.path.exists(jsonl_path):
             raw_dataset = load_dataset("json", data_files=jsonl_path, split="train")
-            self.image_dir = os.path.join(self.data_root, "images")
-            self.video_dir = os.path.join(self.data_root, "videos")
+            self.image_dir = os.path.join(self.data_root, "images") if self.image_dir is None else self.image_dir
+            self.video_dir = os.path.join(self.data_root, "videos") if self.video_dir is None else self.video_dir
         elif os.path.exists(txt_path):
             with open(txt_path, 'r', encoding='utf-8') as f:
                 prompts = [line.strip() for line in f if line.strip()]
             raw_dataset = HFDataset.from_dict({"prompt": prompts})
-            self.image_dir = None
-            self.video_dir = None
+            self.image_dir = None if self.image_dir is None else self.image_dir
+            self.video_dir = None if self.video_dir is None else self.video_dir
             logger.info(f"Loaded {len(prompts)} prompts from {txt_path}")
         else:
             raise FileNotFoundError(f"Could not find {jsonl_path} or {txt_path}")
@@ -292,7 +296,7 @@ class GeneralDataset(Dataset):
                     if isinstance(img_paths, str):
                         img_paths = [img_paths]
                     image_args['images'].append([
-                        Image.open(os.path.join(image_dir, img_path)).convert("RGB") 
+                        Image.open(_resolve_path(image_dir, img_path)).convert("RGB") 
                         for img_path in img_paths
                     ])
 
@@ -312,7 +316,7 @@ class GeneralDataset(Dataset):
                     if isinstance(video_paths, str):
                         video_paths = [video_paths]
                     video_args['videos'].append([
-                        load_video_frames(os.path.join(video_dir, video_path))
+                        load_video_frames(_resolve_path(video_dir, video_path))
                         for video_path in video_paths
                     ])
 
@@ -464,6 +468,11 @@ class GeneralDataset(Dataset):
 # Utility Functions
 # ========================================================================================
 
+
+def _resolve_path(base_dir: str, path: str) -> str:
+    """Resolve path: use as-is if absolute, otherwise join with base_dir."""
+    return path if os.path.isabs(path) else os.path.join(base_dir, path)
+    
 def load_video_frames(video_path: str, fps: Optional[int] = None) -> List[Image.Image]:
     """
     Load video frames using imageio (diffusers standard).

@@ -12,6 +12,14 @@ class DataArguments(ArgABC):
         default="data",
         metadata={"help": "Path to the folder containing the datasets."},
     )
+    image_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the folder containing conditioning images. Defaults to 'images' subfolder in dataset_dir."},
+    )
+    video_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the folder containing conditioning videos. Defaults to 'videos' subfolder in dataset_dir."},
+    )
     preprocessing_batch_size: int = field(
         default=8,
         metadata={"help": "The batch size for preprocessing the datasets."},
@@ -28,7 +36,6 @@ class DataArguments(ArgABC):
         default=True,
         metadata={"help": "Whether to force reprocessing of the dataset even if cached data exists."},
     )
-
     max_dataset_size: Optional[int] = field(
         default=None,
         metadata={"help": "If set, limits the maximum number of samples in the dataset."},
