@@ -345,9 +345,10 @@ class DiffusionNFTTrainer(BaseTrainer):
                             loss += kl_penalty
                             loss_info['kl_div'].append(kl_div.detach())
                             loss_info['kl_penalty'].append(kl_penalty.detach())
-                        loss_info["policy_loss"] = policy_loss.detach()
-                        loss_info["unweighted_policy_loss"] = ori_policy_loss.mean().detach()
-                        loss_info["loss"] = loss.detach()
+
+                        loss_info["policy_loss"].append(policy_loss.detach())
+                        loss_info["unweighted_policy_loss"].append(ori_policy_loss.mean().detach())
+                        loss_info["loss"].append(loss.detach())
 
                         # Backward
                         self.accelerator.backward(loss)
