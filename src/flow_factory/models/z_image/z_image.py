@@ -327,12 +327,14 @@ class ZImageAdapter(BaseAdapter):
             if extra_call_back_kwargs:
                 capturable = {'noise_pred': noise_pred, 'noise_levels': current_noise_level}
                 for key in extra_call_back_kwargs:
-                    if hasattr(output, key):
+                    if key in capturable and capturable[key] is not None:
+                        # First check in capturable dict
+                        extra_call_back_res[key].append(capturable[key])
+                    elif hasattr(output, key):
+                        # Then check in output
                         val = getattr(output, key)
                         if val is not None:
                             extra_call_back_res[key].append(val)
-                    elif key in capturable and capturable[key] is not None:
-                        extra_call_back_res[key].append(capturable[key])
 
         # Decode latents to images
         images = self.decode_latents(latents)
