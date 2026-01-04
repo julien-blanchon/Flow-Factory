@@ -34,9 +34,12 @@
 
 # 💻 Supported Algorithms
 
-- GRPO. See [here](link) for detailed guidance.
+| Algorithm      | `trainer_type` |
+|----------------|----------------|
+| GRPO           | grpo           |
+| DiffusionNFT   | nft            |
 
-- Diffusion-NFT. See [here](link) for detailed guidance.
+See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
 
 
 # 💾 Hardward Requirements
