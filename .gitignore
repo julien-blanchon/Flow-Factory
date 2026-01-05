@@ -1,19 +1,36 @@
 logs/
 swanlog/
 wandb/
+*out
+*.log
+*.err
+
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyc
-
 *.egg-info/
 
 .DS_Store
 
 *.ipynb
-
-*out
-*.log
-*.err
-
 .vscode
+
+# Image data
+dataset/**/image/
+dataset/**/image*
+dataset/**/images/
+dataset/**/images*
+dataset/**/*.jpg
+dataset/**/*.png
+dataset/**/*.jpeg
+
+
+# Video data
+dataset/**/video/
+dataset/**/videos/
+dataset/**/video*
+dataset/**/videos*
+dataset/**/*.mp4
+dataset/**/*.avi
+dataset/**/*.mov
