@@ -149,17 +149,24 @@ def get_dataloader(
     # Common dataset kwargs
     base_kwargs = {
         "preprocess_func": preprocess_func,
-        "preprocess_kwargs": filter_kwargs(preprocess_func, **data_args) if preprocess_func else None,
+        "preprocess_kwargs": filter_kwargs(preprocess_func, **data_args) if preprocess_func else None, # Preprocess kwargs
         'extra_hash_strs': [config.model_args.model_type, config.model_args.model_name_or_path], # Use model info to differentiate caches
     }
     base_kwargs.update(filter_kwargs(GeneralDataset.__init__, **data_args))
     base_kwargs['force_reprocess'] = data_args.force_reprocess
 
     # === CREATE/LOAD TRAIN DATASET ===
+    train_preprocess_kwargs = base_kwargs.get('preprocess_kwargs', {}).copy()
+    train_preprocess_kwargs.update(
+        {
+            'is_train': True,
+            'resolution': training_args.resolution,
+        }
+    )
     dataset = _create_or_load_dataset(
         split="train",
         accelerator=accelerator,
-        base_kwargs=base_kwargs,
+        base_kwargs={**base_kwargs, 'preprocess_kwargs': train_preprocess_kwargs},
         enable_distributed=enable_distributed,
     )
 
@@ -185,10 +192,17 @@ def get_dataloader(
     # === CREATE/LOAD TEST DATASET ===
     test_dataloader = None
     if GeneralDataset.check_exists(data_args.dataset, "test"):
+        test_preprocess_kwargs = base_kwargs.get('preprocess_kwargs', {}).copy()
+        test_preprocess_kwargs.update(
+            {
+                'is_train': False,
+                'resolution': eval_args.resolution,
+            }
+        )
         test_dataset = _create_or_load_dataset(
             split="test",
             accelerator=accelerator,
-            base_kwargs=base_kwargs,
+            base_kwargs={**base_kwargs, 'preprocess_kwargs': test_preprocess_kwargs},
             enable_distributed=enable_distributed,
         )
         

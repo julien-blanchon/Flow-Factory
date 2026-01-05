@@ -23,6 +23,7 @@ from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
 
+CONDITION_IMAGE_SIZE = (512, 512)
 
 @dataclass
 class QwenImageEditPlusSample(BaseSample):
@@ -54,9 +55,6 @@ def calculate_dimensions(target_area, ratio):
     height = round(height / 32) * 32
 
     return width, height
-
-CONDITION_IMAGE_SIZE = 384 * 384
-VAE_IMAGE_SIZE = 1024 * 1024
 
 class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus text-to-image models."""
@@ -207,38 +205,51 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     # ---------------------------------------- Image Encoding ---------------------------------- #
     def encode_image(
             self,
-            image: Union[Image.Image, List[Image.Image]],
-            condition_image_size : Optional[Tuple[int, int]] = None,
-            vae_image_size : Optional[Tuple[int, int]] = None,
+            images: Union[Image.Image, List[Image.Image]],
+            resolution: Union[int, Tuple[int, int]],
+            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
             **kwargs
         ) -> Dict[str, List[Union[torch.Tensor, Image.Image, Tuple[int, int]]]]:
-        """Convert PIL images to latent space using VAE. Returns latents and resized conditioning images."""
-        if condition_image_size is None:
-            # Use self.config.training_args.condition_image_size or self.config.training_args.resolution
-            # condition_image_size = self.config.training_args.extra_kwargs.get('condition_image_size', self.config.training_args.resolution)
-            condition_image_size = self.config.training_args.extra_kwargs.get('condition_image_size', CONDITION_IMAGE_SIZE)
+        """
+        Encode input images into latent representations using the VAE encoder.
+        Args:
+            images: `Union[Image.Image, List[Image.Image]]`
+                - Single conditioning image (PIL Image) or a list of conditioning images.
+                - Each image will be resized to fit within `condition_image_size` while maintaining aspect ratio.
+            resolution: `Union[int, Tuple[int, int]]`
+                - Maximum resolution for VAE images. If int, will be used for both height and width.
+            condition_image_size: `Union[int, Tuple[int, int]]`
+                - Maximum size for conditioning images. If int, will be used for both height and width.
+        Returns:
+            Dictionary containing:
+                - "condition_images": List of resized conditioning images.
+                - "condition_image_sizes": List of sizes for conditioning images.
+                - "vae_images": List of preprocessed images for VAE encoding.
+                - "vae_image_sizes": List of sizes for VAE images.
+        """
 
-        if vae_image_size is None:
-            # Use self.config.training_args.resolution or self.config.eval_args.resolution
-            if kwargs.get('stage') == 'eval':
-                vae_image_size = self.config.eval_args.resolution
-            else:
-                vae_image_size = self.config.training_args.resolution
+        if isinstance(condition_image_size, int):
+            condition_image_size = (condition_image_size, condition_image_size)
+        if isinstance(resolution, int):
+            resolution = (resolution, resolution)
+
+        max_area = resolution[0] * resolution[1]
+        condition_image_max_area = condition_image_size[0] * condition_image_size[1]
 
         condition_image_sizes = []
         condition_images = []
         vae_image_sizes = []
         vae_images = []
 
-        if not isinstance(image, list):
-            image = [image]
+        if not isinstance(images, list):
+            images = [images]
 
-        for img in image:
+        for img in images:
             image_width, image_height = img.size
             condition_width, condition_height = calculate_dimensions(
-                condition_image_size, image_width / image_height
+                condition_image_max_area, image_width / image_height
             )
-            vae_width, vae_height = calculate_dimensions(vae_image_size, image_width / image_height)
+            vae_width, vae_height = calculate_dimensions(max_area, image_width / image_height)
             condition_image_sizes.append((condition_width, condition_height))
             vae_image_sizes.append((vae_width, vae_height))
             condition_images.append(self.pipeline.image_processor.resize(img, condition_height, condition_width))
@@ -252,7 +263,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         }
 
     # ---------------------------------------- Video Encoding ---------------------------------- #
-    def encode_video(self, video: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
+    def encode_video(self, videos: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
         """Not needed for Qwen-Image-Edit models."""
         pass
 
@@ -315,7 +326,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 **filter_kwargs(self.encode_prompt, **input_kwargs)
             )
             encoded_images = self.encode_image(
-                image=imgs,
+                images=imgs,
                 **filter_kwargs(self.encode_image, **input_kwargs)
             )
             for k, v in encoded_prompt.items():
@@ -472,7 +483,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             and (condition_images is None or vae_images is None or condition_image_sizes is None or vae_image_sizes is None)
         ):
             encoded_images = self.encode_image(
-                image=images,
+                images=images,
                 condition_image_size=self.config.training_args.extra_kwargs.get('condition_image_size', CONDITION_IMAGE_SIZE),
                 vae_image_size=(height, width),
                 stage=self.mode,

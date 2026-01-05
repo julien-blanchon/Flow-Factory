@@ -32,6 +32,7 @@ class Flux2Sample(BaseSample):
     image_latent_ids : Optional[torch.Tensor] = None
 
 
+CONDITION_IMAGE_SIZE = 1024 * 1024
 class Flux2Adapter(BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.2)."""
     
@@ -147,12 +148,18 @@ class Flux2Adapter(BaseAdapter):
         }
 
     # ------------------------- Image Encoding ------------------------
-    def encode_image(self, images: Union[Image.Image, List[Image.Image]], **kwargs) -> Dict[str, torch.Tensor]:
+    def encode_image(
+            self,
+            images: Union[Image.Image, List[Image.Image]],
+            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+            **kwargs
+        ) -> Dict[str, torch.Tensor]:
         """Encode input condition_image(s) into latent representations using the Flux.2 image encoder."""
         device = kwargs.get('device', self.pipeline.vae.device)
         dtype = kwargs.get('dtype', self.pipeline.vae.dtype)
         condition_image_tensors : List[torch.Tensor] = self._resize_condition_images(
             condition_images=images,
+            condition_image_size=condition_image_size,
             **filter_kwargs(self._resize_condition_images, **kwargs)
         )
         image_latents, image_latent_ids =  self.pipeline.prepare_image_latents(
@@ -169,7 +176,7 @@ class Flux2Adapter(BaseAdapter):
         }
     
     # ------------------------- Video Encoding ------------------------
-    def encode_video(self, video: Any, **kwargs) -> None:
+    def encode_video(self, videos: Any, **kwargs) -> None:
         """Flux.2 does not support video encoding."""
         pass
 
@@ -189,7 +196,12 @@ class Flux2Adapter(BaseAdapter):
 
         return images
 
-    def _resize_condition_images(self, condition_images: Union[Image.Image, List[Image.Image]], **kwargs) -> List[torch.Tensor]:
+    def _resize_condition_images(
+            self,
+            condition_images: Union[Image.Image, List[Image.Image]],
+            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+            **kwargs
+        ) -> List[torch.Tensor]:
         """Preprocess condition images for Flux.2 model."""
         if isinstance(condition_images, Image.Image):
             condition_images = [condition_images]
@@ -197,11 +209,16 @@ class Flux2Adapter(BaseAdapter):
         for img in condition_images:
             self.pipeline.image_processor.check_image_input(img)
 
+        if isinstance(condition_image_size, int):
+            condition_image_size = (condition_image_size, condition_image_size)
+
+        max_area = condition_image_size[0] * condition_image_size[1]
+
         condition_image_tensors = []
         for img in condition_images:
             image_width, image_height = img.size
-            if image_width * image_height > 1024 * 1024:
-                img = self.pipeline.image_processor._resize_to_target_area(img, 1024 * 1024)
+            if image_width * image_height > max_area:
+                img = self.pipeline.image_processor._resize_to_target_area(img, max_area)
                 image_width, image_height = img.size
 
             multiple_of = self.pipeline.vae_scale_factor * 2

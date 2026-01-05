@@ -179,11 +179,11 @@ class Wan2_T2V_Adapter(BaseAdapter):
 
         return results
     
-    def encode_image(self, image: Union[Image.Image, torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
+    def encode_image(self, images: Union[Image.Image, torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
         """Not needed for Wan text-to-video models."""
         pass
 
-    def encode_video(self, video: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
+    def encode_video(self, videos: Union[torch.Tensor, List[torch.Tensor]], **kwargs) -> torch.Tensor:
         """Not needed for Wan text-to-video models."""
         pass
 

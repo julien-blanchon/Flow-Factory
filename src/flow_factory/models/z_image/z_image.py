@@ -129,7 +129,7 @@ class ZImageAdapter(BaseAdapter):
     
     def encode_image(
         self,
-        image: Union[Image.Image, torch.Tensor, List[torch.Tensor]],
+        images: Union[Image.Image, torch.Tensor, List[torch.Tensor]],
         **kwargs   
     ):
         """Not needed for Z-Image models."""
@@ -137,7 +137,7 @@ class ZImageAdapter(BaseAdapter):
 
     def encode_video(
         self,
-        video: Union[torch.Tensor, List[torch.Tensor]],
+        videos: Union[torch.Tensor, List[torch.Tensor]],
         **kwargs
     ):
         """Not needed for Z-Image models."""
