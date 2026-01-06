@@ -365,12 +365,12 @@ class Flux1KontextAdapter(BaseAdapter):
         # image ids are the same as latent ids with the first dimension set to 1 instead of 0
         image_ids = self.pipeline._prepare_latent_image_ids(batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype)
         image_ids[..., 0] = 1
+        latent_ids = torch.cat([latent_ids, image_ids], dim=0) # Catenate at the sequence dimension
 
         latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, latent_height, latent_width)
 
-        if image_ids is not None:
-            latent_ids = torch.cat([latent_ids, image_ids], dim=0) # Catenate at the sequence dimension
+
 
         # 5. Set scheduler timesteps
         timesteps = set_scheduler_timesteps(
