@@ -14,6 +14,28 @@ import torch
 import numpy as np
 from accelerate import Accelerator
 
+# ----------------------------------- Type Check --------------------------------------
+
+def is_pil_image_list(image_list: List[Any]) -> bool:
+    """
+    Check if the input is a list of PIL Images.
+    Args:
+        image_list (List[Any]): list to check
+    Returns:
+        bool: True if all elements are PIL Images, False otherwise
+    """
+    return isinstance(image_list, list) and all(isinstance(img, Image.Image) for img in image_list)
+
+def is_pil_image_batch_list(image_batch_list: List[List[Any]]) -> bool:
+    """
+    Check if the input is a list of lists of PIL Images.
+    Args:
+        image_batch_list (List[List[Any]]): list of lists to check
+    Returns:
+        bool: True if all elements in all sublists are PIL Images, False otherwise
+    """
+    return isinstance(image_batch_list, list) and all(is_pil_image_list(batch) for batch in image_batch_list)
+
 # ------------------------------------Function Utils-------------------------------------
 
 def filter_kwargs(func: Callable, **kwargs: Any) -> dict[str, Any]:

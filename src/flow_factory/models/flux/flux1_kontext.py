@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import os
-from typing import Union, List, Dict, Any, Optional, Tuple
+from typing import Union, List, Dict, Any, Optional, Tuple, Literal
 from dataclasses import dataclass
-from PIL import Image
 import logging
 from collections import defaultdict
+from PIL import Image
+import numpy as np
 
 from accelerate import Accelerator
 import torch
@@ -16,7 +17,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from ..adapter import BaseAdapter, BaseSample
 from ...hparams import *
 from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
-from ...utils.base import filter_kwargs
+from ...utils.base import filter_kwargs, is_pil_image_batch_list, is_pil_image_list, tensor_to_pil_image, tensor_list_to_pil_image, numpy_list_to_pil_image, numpy_to_pil_image
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -43,15 +44,21 @@ PREFERRED_KONTEXT_RESOLUTIONS = [
 
 CONDITION_IMAGE_SIZE = (1024, 1024)
 
+FluxKontextImageInput = Union[
+    Image.Image,
+    np.ndarray,
+    torch.Tensor,
+    List[Image.Image],
+    List[np.ndarray],
+    List[torch.Tensor],
+]
 
 @dataclass
 class Flux1KontextSample(BaseSample):
     """Output class for Flux Adapter models."""
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
-    condition_images : Optional[Union[List[Image.Image], Image.Image]] = None
+    condition_images : Optional[Union[Image.Image, torch.Tensor, np.ndarray]] = None
     image_latents : Optional[torch.FloatTensor] = None
-
-
 
 def adjust_image_dimension(
         height: int,
@@ -142,9 +149,61 @@ class Flux1KontextAdapter(BaseAdapter):
             'pooled_prompt_embeds': pooled_prompt_embeds,
         }
 
+    def _standardize_image_input(
+        self,
+        images: Union[FluxKontextImageInput, List[FluxKontextImageInput]],
+        output_type: Literal['pil', 'np', 'pt'] = 'pil',
+    ):
+        """
+        Standardize image input to desired output type.
+        """
+        if isinstance(images, Image.Image):
+            images = [images]
+        elif isinstance(images, list) and all(isinstance(batch, list) for batch in images):
+            # A list of list of images
+            if any(len(batch) > 1 for batch in images):
+                logger.warning(
+                    "Multiple condition images are not supported for Flux1-Kontext-dev. Only the first image of each batch will be used."
+                )
+            
+            images = [batch[0] for batch in images]
+        
+        
+        if isinstance(images, torch.Tensor):
+            if output_type == 'pil':
+                images = tensor_to_pil_image(images)
+            elif output_type == 'np':
+                images = images.cpu().numpy()
+        elif isinstance(images, np.ndarray):
+            if output_type == 'pil':
+                images = numpy_to_pil_image(images)
+            elif output_type == 'pt':
+                images = torch.from_numpy(images)
+        elif isinstance(images, list):
+            if isinstance(images[0], torch.Tensor):
+                if output_type == 'pil':
+                    images = tensor_list_to_pil_image(images)
+                elif output_type == 'np':
+                    images = [img.cpu().numpy() for img in images]
+            elif isinstance(images[0], np.ndarray):
+                if output_type == 'pil':
+                    images = numpy_list_to_pil_image(images)
+                elif output_type == 'pt':
+                    images = [torch.from_numpy(img) for img in images]
+            elif isinstance(images[0], Image.Image):
+                if output_type == 'np':
+                    images = [np.array(img) for img in images]
+                elif output_type == 'pt':
+                    images = [torch.from_numpy(np.array(img)) for img in images]
+            else:
+                raise ValueError(f'Unsupported image type in list: {type(images[0])}.')
+        else:
+            raise ValueError(f'Unsupported image input type: {type(images)}.')
+        return images
+
     def encode_image(
             self,
-            images: Union[List[Image.Image], Image.Image],
+            images: Union[List[FluxKontextImageInput], FluxKontextImageInput],
             condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
             generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
             **kwargs
@@ -152,16 +211,26 @@ class Flux1KontextAdapter(BaseAdapter):
         """
         Encode input images into latent representations using the VAE encoder.
         Args:
-            images: Single condition image or list of images (PIL.Image).
+            images: Single condition image or a batch of images (PIL.Image).
             condition_image_size: Desired size for condition images (int or (width, height)).
             auto_resize: Whether to automatically resize images to preferred resolutions.
             generator: Optional random generator(s) for encoding.
         Returns:
-            Dictionary containing resized PIL.Image 'condition_images' and 'image_latents' tensors.
+            Dictionary containing resized 'condition_images' and 'image_latents' tensors.
         """
         device = self.pipeline.vae.device
         dtype = self.pipeline.vae.dtype
-        images = [images] if isinstance(images, Image.Image) else images
+        if isinstance(images, Image.Image):
+            images = [images]
+        elif isinstance(images, list) and all(isinstance(batch, list) for batch in images):
+            # A list of list of images
+            if any(len(batch) > 1 for batch in images):
+                logger.warning(
+                    "Multiple condition images are not supported for Flux1-Kontext-dev. Only the first image of each batch will be used."
+                )
+            
+            images = [batch[0] for batch in images]
+
         batch_size = len(images)
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
 
@@ -179,16 +248,10 @@ class Flux1KontextAdapter(BaseAdapter):
             condition_max_area,
             self.pipeline.vae_scale_factor,
         )
-        images = [
-            self.pipeline.image_processor.resize(img, image_height, image_width)
-            for img in images
-        ]
-        image_tensors = [
-            self.pipeline.image_processor.preprocess(img, image_height, image_width)
-            for img in images
-        ]
+        images = self.pipeline.image_processor.resize(images, image_height, image_width)
+        image_tensors = self.pipeline.image_processor.preprocess(images, image_height, image_width)
         # 2. Prepare `image_latents` and `image_ids`
-        image_tensors = torch.cat(image_tensors, dim=0).to(device=device, dtype=dtype)
+        image_tensors = image_tensors.to(device=device, dtype=dtype)
         image_latents = self.pipeline._encode_vae_image(image=image_tensors, generator=generator)
         image_latent_height, image_latent_width = image_latents.shape[2:]
         image_latents = self.pipeline._pack_latents(
@@ -201,7 +264,7 @@ class Flux1KontextAdapter(BaseAdapter):
         # image_ids[..., 0] = 1
 
         return {
-            'condition_images': images,
+            'condition_images': image_tensors,
             'image_latents': image_latents,
         }
     
@@ -221,7 +284,7 @@ class Flux1KontextAdapter(BaseAdapter):
     def inference(
         self,
         # Oridinary inputs
-        images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        images: Optional[FluxKontextImageInput] = None,
         condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
         prompt: Optional[Union[str, List[str]]] = None,
         num_inference_steps: int = 50,
@@ -238,7 +301,7 @@ class Flux1KontextAdapter(BaseAdapter):
         pooled_prompt_embeds: Optional[torch.Tensor] = None,
 
         # Encoded images
-        condition_images: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        condition_images: Optional[FluxKontextImageInput] = None,
         image_latents: Optional[torch.Tensor] = None,
 
         # Extra kwargs
@@ -280,10 +343,13 @@ class Flux1KontextAdapter(BaseAdapter):
             condition_images = encoded_image['condition_images']
             image_latents = encoded_image['image_latents']
         else:
-            # condition_images = condition_images # Keep as is
+            # Convert to pt if needed
+            condition_images = self._standardize_image_input(
+                condition_images,
+                output_type='pt',
+            )
             image_latents = image_latents.to(device)
 
-        image_width, image_height = condition_images[0].size # All condition images have the same size
         batch_size = len(prompt_embeds)
         dtype = prompt_embeds.dtype
         text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
@@ -291,12 +357,20 @@ class Flux1KontextAdapter(BaseAdapter):
         )
 
         # 4. Prepare initial latents
+        latent_height = 2 * (int(height) // (self.pipeline.vae_scale_factor * 2))
+        latent_width = 2 * (int(width) // (self.pipeline.vae_scale_factor * 2))
+        
+        image_height, image_width = condition_images.shape[2:]
+        image_latent_height = 2 * (int(image_height) // (self.pipeline.vae_scale_factor * 2))
+        image_latent_width = 2 * (int(image_width) // (self.pipeline.vae_scale_factor * 2))
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
-        shape = (batch_size, num_channels_latents, height, width)
-        latent_ids = self.pipeline._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
-        image_ids = self.pipeline._prepare_latent_image_ids(batch_size, image_height // 2, image_width // 2, device, dtype)
+        shape = (batch_size, num_channels_latents, latent_height, latent_width)
+
+        latent_ids = self.pipeline._prepare_latent_image_ids(batch_size, latent_height // 2, latent_width // 2, device, dtype)
+        image_ids = self.pipeline._prepare_latent_image_ids(batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype)
+
         latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, height, width)
+        latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, latent_height, latent_width)
 
         if image_ids is not None:
             latent_ids = torch.cat([latent_ids, image_ids], dim=0) # Catenate at the sequence dimension

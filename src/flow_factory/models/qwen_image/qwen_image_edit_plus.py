@@ -91,7 +91,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     def _get_qwen_prompt_embeds(
         self,
         prompt: Union[str, List[str]] = None,
-        image: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        images: Optional[Union[Image.Image, List[Image.Image]]] = None,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
         max_sequence_length: int = 1024,
@@ -101,11 +101,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
-        if isinstance(image, list):
+        if isinstance(images, list):
             base_img_prompt = ""
-            for i, img in enumerate(image):
+            for i, img in enumerate(images):
                 base_img_prompt += img_prompt_template.format(i + 1)
-        elif image is not None:
+        elif images is not None:
             base_img_prompt = img_prompt_template.format(1)
         else:
             base_img_prompt = ""
@@ -155,7 +155,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         self,
         prompt: Union[str, List[str]],
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        image : Optional[Union[Image.Image, List[Image.Image]]] = None,
+        images : Optional[Union[Image.Image, List[Image.Image]]] = None,
         max_sequence_length: int = 1024,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
@@ -172,7 +172,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         # Encode positive prompt
         prompt_ids, prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
             prompt=prompt,
-            image=image,
+            images=images,
             device=device,
             dtype=dtype,
             max_sequence_length=max_sequence_length
@@ -189,7 +189,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         if negative_prompt:
             negative_prompt_ids, negative_prompt_embeds, negative_prompt_embeds_mask = self._get_qwen_prompt_embeds(
                 prompt=negative_prompt,
-                image=image,
+                images=images,
                 device=device,
                 dtype=dtype,
                 max_sequence_length=max_sequence_length
@@ -322,7 +322,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             encoded_prompt = self.encode_prompt(
                 prompt=p,
                 negative_prompt=neg_p,
-                image=imgs,
+                images=imgs,
                 **filter_kwargs(self.encode_prompt, **input_kwargs)
             )
             encoded_images = self.encode_image(
@@ -499,6 +499,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             encoded = self.encode_prompt(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
+                images=images,
                 max_sequence_length=max_sequence_length,
                 device=device,
                 dtype=dtype,
