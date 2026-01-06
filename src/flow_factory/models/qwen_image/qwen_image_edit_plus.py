@@ -23,7 +23,7 @@ from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
 
-CONDITION_IMAGE_SIZE = (512, 512)
+CONDITION_IMAGE_SIZE = (1024, 1024)
 
 @dataclass
 class QwenImageEditPlusSample(BaseSample):

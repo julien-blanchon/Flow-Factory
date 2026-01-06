@@ -59,6 +59,7 @@ class Flux1KontextSample(BaseSample):
     pooled_prompt_embeds : Optional[torch.FloatTensor] = None
     condition_images : Optional[Union[Image.Image, torch.Tensor, np.ndarray]] = None
     image_latents : Optional[torch.FloatTensor] = None
+    condition_image_size: Optional[Tuple[int, int]] = None
 
 def adjust_image_dimension(
         height: int,
@@ -208,7 +209,7 @@ class Flux1KontextAdapter(BaseAdapter):
     def encode_image(
             self,
             images: Union[List[FluxKontextImageInput], FluxKontextImageInput],
-            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+            condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
             generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
             **kwargs
         ) -> Dict[str, Union[torch.Tensor, List[Image.Image]]]:
@@ -220,7 +221,7 @@ class Flux1KontextAdapter(BaseAdapter):
             auto_resize: Whether to automatically resize images to preferred resolutions.
             generator: Optional random generator(s) for encoding.
         Returns:
-            Dictionary containing resized 'condition_images' and 'image_latents' tensors.
+            Dictionary containing resized 'condition_images', 'image_latents' and 'image_ids'.
         """
         device = self.pipeline.vae.device
         dtype = self.pipeline.vae.dtype
@@ -238,12 +239,20 @@ class Flux1KontextAdapter(BaseAdapter):
         batch_size = len(images)
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
 
-        if isinstance(condition_image_size, int):
-            condition_image_size = (condition_image_size, condition_image_size)
+        if condition_image_size is None:
+            first_image = images[0] # Use the first image to determine size
+            image_height, image_width = self.pipeline.image_processor.get_default_height_width(first_image)
+            aspect_ratio = image_width / image_height
+            # Auto resize to preferred kontext resolution
+            _, image_width, image_height = min(
+                (abs(aspect_ratio - w / h), w, h) for w, h in PREFERRED_KONTEXT_RESOLUTIONS
+            )
+        elif isinstance(condition_image_size, int):
+            image_height, image_width = condition_image_size, condition_image_size
+        else:
+            image_height, image_width = condition_image_size
 
-        condition_max_area = condition_image_size[0] * condition_image_size[1]
-
-        image_height, image_width = condition_image_size
+        condition_max_area = image_height * image_width
 
         # resize to integer multiple of vae_scale_factor
         image_height, image_width = adjust_image_dimension(
@@ -261,15 +270,16 @@ class Flux1KontextAdapter(BaseAdapter):
         image_latents = self.pipeline._pack_latents(
             image_latents, batch_size, num_channels_latents, image_latent_height, image_latent_width
         )
-        # image_ids = self.pipeline._prepare_latent_image_ids(
-        #     batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
-        # )
-        # # image ids are the same as latent ids with the first dimension set to 1 instead of 0
-        # image_ids[..., 0] = 1
+        image_ids = self.pipeline._prepare_latent_image_ids(
+            batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
+        )
+        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
+        image_ids[..., 0] = 1
 
         return {
             'condition_images': image_tensors,
             'image_latents': image_latents,
+            'image_ids': image_ids.unsqueeze(0).expand(batch_size, *[-1] * (image_ids.ndim)),  # Expand to batch size
         }
     
     def encode_video(self, video: Any, **kwargs) -> None:
@@ -283,14 +293,48 @@ class Flux1KontextAdapter(BaseAdapter):
         image = self.pipeline.image_processor.postprocess(image, output_type=output_type)
         return image
 
+    # ======================== Prepare Latents =============================
+    def prepare_latents(
+        self,
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.Tensor] = None,
+    ):
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+
+        # VAE applies 8x compression on images but we must also account for packing which requires
+        # latent height and width to be divisible by 2.
+        height = 2 * (int(height) // (self.pipeline.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.pipeline.vae_scale_factor * 2))
+        shape = (batch_size, num_channels_latents, height, width)
+
+        latent_ids = self.pipeline._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
+
+        if latents is None:
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, height, width)
+        else:
+            latents = latents.to(device=device, dtype=dtype)
+
+        return latents, latent_ids
+
     # ======================== Inference =============================
     @torch.no_grad()
     def inference(
         self,
         # Oridinary inputs
         images: Optional[FluxKontextImageInput] = None,
-        condition_image_size: Optional[Union[int, Tuple[int, int]]] = CONDITION_IMAGE_SIZE,
         prompt: Optional[Union[str, List[str]]] = None,
+        condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
         num_inference_steps: int = 50,
         height: Optional[int] = None,
         width: Optional[int] = None,
@@ -306,6 +350,7 @@ class Flux1KontextAdapter(BaseAdapter):
         # Encoded images
         condition_images: Optional[FluxKontextImageInput] = None,
         image_latents: Optional[torch.Tensor] = None,
+        image_ids: Optional[torch.Tensor] = None,
 
         # Extra kwargs
         compute_log_prob: bool = True,
@@ -329,7 +374,7 @@ class Flux1KontextAdapter(BaseAdapter):
             pooled_prompt_embeds = pooled_prompt_embeds.to(device)
 
         # 3. Encode images if not encoded
-        if condition_images is None or image_latents is None:
+        if condition_images is None or image_latents is None or image_ids is None:
             encoded_image = self.encode_image(
                 images=images, 
                 condition_image_size=condition_image_size,
@@ -337,6 +382,7 @@ class Flux1KontextAdapter(BaseAdapter):
             )
             condition_images = encoded_image['condition_images']
             image_latents = encoded_image['image_latents']
+            image_ids = encoded_image['image_ids']
         else:
             # Convert to pt if needed
             condition_images = self._standardize_image_input(
@@ -344,31 +390,28 @@ class Flux1KontextAdapter(BaseAdapter):
                 output_type='pt',
             )
             image_latents = image_latents.to(device)
+            image_ids = image_ids.to(device)
+
+        if image_ids.dim() == 4:
+            # Remove batch dimension if exists
+            image_ids = image_ids[0]
 
         batch_size = len(prompt_embeds)
         dtype = prompt_embeds.dtype
-        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
-            device=device, dtype=dtype
-        )
+        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=dtype)
 
         # 4. Prepare initial latents
-        latent_height = 2 * (int(height) // (self.pipeline.vae_scale_factor * 2))
-        latent_width = 2 * (int(width) // (self.pipeline.vae_scale_factor * 2))
-        
-        image_height, image_width = condition_images.shape[2:]
-        image_latent_height = 2 * (int(image_height) // (self.pipeline.vae_scale_factor * 2))
-        image_latent_width = 2 * (int(image_width) // (self.pipeline.vae_scale_factor * 2))
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
-        shape = (batch_size, num_channels_latents, latent_height, latent_width)
-
-        latent_ids = self.pipeline._prepare_latent_image_ids(batch_size, latent_height // 2, latent_width // 2, device, dtype)
-        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
-        image_ids = self.pipeline._prepare_latent_image_ids(batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype)
-        image_ids[..., 0] = 1
+        latents, latent_ids = self.prepare_latents(
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+            dtype=dtype,
+            device=device,
+            generator=generator,
+        )
         latent_ids = torch.cat([latent_ids, image_ids], dim=0) # Catenate at the sequence dimension
-
-        latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        latents = self.pipeline._pack_latents(latents, batch_size, num_channels_latents, latent_height, latent_width)
 
         # 5. Set scheduler timesteps
         timesteps = set_scheduler_timesteps(
