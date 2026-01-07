@@ -223,12 +223,12 @@ class Flux1KontextAdapter(BaseAdapter):
         return images
 
     def encode_image(
-            self,
-            images: Union[List[FluxKontextImageInput], FluxKontextImageInput],
-            condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
-            generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-            **kwargs
-        ) -> Dict[str, torch.Tensor]:
+        self,
+        images: Union[List[FluxKontextImageInput], FluxKontextImageInput],
+        condition_image_size : Optional[Union[int, Tuple[int, int]]] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
         """
         Encode input images into latent representations using the VAE encoder.
         Args:

@@ -277,12 +277,12 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     
     # ---------------------------------------- Image Encoding ---------------------------------- #
     def encode_image(
-            self,
-            images: QwenImageEditPlusImageInput,
-            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
-            generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-            **kwargs
-        ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]:
+        self,
+        images: QwenImageEditPlusImageInput,
+        condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        generator : Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        **kwargs
+    ) -> Dict[str, Union[torch.Tensor, List[torch.Tensor], List[Tuple[int, int]]]]:
         """
         Encode input images into latent representations using the VAE encoder.
         Args:

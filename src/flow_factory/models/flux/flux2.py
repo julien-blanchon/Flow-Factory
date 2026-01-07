@@ -159,13 +159,13 @@ class Flux2Adapter(BaseAdapter):
 
     # ------------------------- Image Encoding ------------------------
     def encode_image(
-            self,
-            images: Union[Image.Image, List[Image.Image]],
-            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
-            device: Optional[torch.device] = None,
-            dtype: Optional[torch.device] = None,
-            **kwargs
-        ) -> Dict[str, torch.Tensor]:
+        self,
+        images: Union[Image.Image, List[Image.Image]],
+        condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.device] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
         """Encode input condition_image(s) into latent representations using the Flux.2 image encoder."""
         device = device or self.pipeline.vae.device
         dtype = dtype or self.pipeline.vae.dtype
@@ -209,11 +209,11 @@ class Flux2Adapter(BaseAdapter):
         return images
 
     def _resize_condition_images(
-            self,
-            condition_images: Union[Image.Image, List[Image.Image]],
-            condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
-            **kwargs
-        ) -> List[torch.Tensor]:
+        self,
+        condition_images: Union[Image.Image, List[Image.Image]],
+        condition_image_size : Union[int, Tuple[int, int]] = CONDITION_IMAGE_SIZE,
+        **kwargs
+    ) -> List[torch.Tensor]:
         """Preprocess condition images for Flux.2 model."""
         if isinstance(condition_images, Image.Image):
             condition_images = [condition_images]
@@ -285,12 +285,12 @@ class Flux2Adapter(BaseAdapter):
 
     # ========================Preprocessing ========================
     def preprocess_func(
-            self,
-            prompt: List[str],
-            images: Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]] = None,
-            caption_upsample_temperature: Optional[float] = None,
-            **kwargs
-        ) -> Dict[str, Union[List[Any], torch.Tensor]]:
+        self,
+        prompt: List[str],
+        images: Optional[Union[List[Optional[Image.Image]], List[List[Optional[Image.Image]]]]] = None,
+        caption_upsample_temperature: Optional[float] = None,
+        **kwargs
+    ) -> Dict[str, Union[List[Any], torch.Tensor]]:
         """Preprocess inputs for Flux.2 model. The inputs are expected to be batches."""
         if images is not None:
             assert len(prompt) == len(images), "Prompts and images must have same batch size"
