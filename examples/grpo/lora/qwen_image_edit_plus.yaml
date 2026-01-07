@@ -18,7 +18,7 @@ data:
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
-  condition_image_size: 1024  # Max condition image resolution, int or [height, width]
+  condition_image_size: [1024, 1024]  # Max condition image resolution, int or [height, width]
 
 # Model Configuration
 model:
@@ -44,7 +44,7 @@ train:
   enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
-  resolution: 512  # Can be int or [height, width]
+  resolution: 384  # Can be int or [height, width]
   auto_resize: true # Enable auto-resize to fit the condition images' aspect ratio during inference
   
   # Batch and sampling
@@ -68,8 +68,8 @@ train:
   dynamics_type: "Flow-SDE"  # Options: Flow-SDE, Dance-SDE, CPS, ODE
   num_inference_steps: 10  # Number of SDE timesteps
   noise_level: 1.0  # Noise level for sampling
-  num_train_steps: 1  # Number of noise steps
-  train_steps: [1, 2, 3]  # Custom noise window
+  num_train_steps: 4  # Number of steps to train on
+  train_steps: [1, 2, 3, 4]  # Custom noise window
   guidance_scale: 4  # Guidance scale for sampling
   
   # Optimization

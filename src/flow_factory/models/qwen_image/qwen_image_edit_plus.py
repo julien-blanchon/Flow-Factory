@@ -298,6 +298,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 - "condition_image_sizes": List of sizes for conditioning images.
                 - "vae_images": List of preprocessed images for VAE encoding.
                 - "vae_image_sizes": List of sizes for VAE images.
+                - "image_latents": batch of packed image latents
         """
         batch_size = 1
         if isinstance(condition_image_size, int):
