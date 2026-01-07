@@ -884,6 +884,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
             for b in range(batch_size)
         ]
 
+        self.pipeline.maybe_free_model_hooks()
+
         return samples
 
     @torch.no_grad()
@@ -915,6 +917,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         image_latents: Optional[List[torch.Tensor]] = None, # A batch of image latents
 
         # Other arguments
+        extra_call_back_kwargs: List[str] = [],
         attention_kwargs: Optional[Dict[str, Any]] = {},
         max_sequence_length: int = 1024,
         compute_log_prob: bool = False,
@@ -1000,9 +1003,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
                 attention_kwargs=attention_kwargs,
                 max_sequence_length=max_sequence_length,
                 compute_log_prob=compute_log_prob,
+                extra_call_back_kwargs=extra_call_back_kwargs,
                 **kwargs,
             )
             all_samples.extend(sample)
+
         return all_samples
 
     # ======================== Forward for training ========================
