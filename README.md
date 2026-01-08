@@ -144,7 +144,7 @@ For models like [FLUX.2-dev]((https://huggingface.co/black-forest-labs/FLUX.2-de
 
 ```jsonl
 {"prompt": "A hill in a sunset.", "images": ["path/to/condition_image_1_1.png", "path/to/condition_image_1_2.png"]}
-{"prompt": "An astronaut riding a horse on Mars.", "image": ["path/to/condition_image_2_1.png", "path/to/condition_image_2_2.png"]}
+{"prompt": "An astronaut riding a horse on Mars.", "images": ["path/to/condition_image_2_1.png", "path/to/condition_image_2_2.png"]}
 ```
 
 ## Video-to-Video
