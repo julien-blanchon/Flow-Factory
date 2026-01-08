@@ -163,6 +163,7 @@ def get_dataloader(
             **training_args,
         }
     )
+    train_preprocess_kwargs = filter_kwargs(preprocess_func, **train_preprocess_kwargs)
     dataset = _create_or_load_dataset(
         split="train",
         accelerator=accelerator,
@@ -199,6 +200,7 @@ def get_dataloader(
                 **eval_args,
             }
         )
+        test_preprocess_kwargs = filter_kwargs(preprocess_func, **test_preprocess_kwargs)
         test_dataset = _create_or_load_dataset(
             split="test",
             accelerator=accelerator,

@@ -17,7 +17,16 @@ from ..adapter import BaseAdapter
 from ..samples import ImageConditionSample
 from ...hparams import *
 from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
-from ...utils.base import filter_kwargs, pil_image_to_tensor
+from ...utils.base import (
+    filter_kwargs,
+    is_pil_image_batch_list,
+    is_pil_image_list,
+    tensor_to_pil_image,
+    tensor_list_to_pil_image,
+    numpy_list_to_pil_image,
+    numpy_to_pil_image,
+    pil_image_to_tensor
+)
 from ...utils.logger_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -245,42 +254,50 @@ class Flux2Adapter(BaseAdapter):
         self,
         images: Flux2ImageInput,
         output_type: Literal['pil', 'pt', 'np'] = 'pil',
-    ) -> Union[List[Image.Image], List[np.ndarray], List[torch.Tensor]]:
-        """Standardize image input to desired output type."""
-        if images is None:
-            return None
-        
+    ):
+        """
+        Standardize image input to desired output type.
+        """
         if isinstance(images, Image.Image):
             images = [images]
         
         if isinstance(images, torch.Tensor):
-            if images.ndim == 3:
-                images = [images]
             if output_type == 'pil':
-                images = [Image.fromarray((img.cpu().numpy() * 255).astype(np.uint8) if img.max() <= 1 else img.cpu().numpy().astype(np.uint8)) for img in images]
+                images = tensor_to_pil_image(images)
             elif output_type == 'np':
-                images = [(img.cpu().numpy() * 255).astype(np.uint8) if img.max() <= 1 else img.cpu().numpy() for img in images]
+                images = images.cpu().numpy()
         elif isinstance(images, np.ndarray):
-            if images.ndim == 3:
-                images = [images]
             if output_type == 'pil':
-                images = [Image.fromarray(img.astype(np.uint8)) for img in images]
+                images = numpy_to_pil_image(images)
             elif output_type == 'pt':
-                images = [torch.from_numpy(img.astype(np.float32) / 255 if img.max() > 1 else img) for img in images]
+                images = torch.from_numpy(images)
         elif isinstance(images, list):
-            if len(images) == 0:
-                return images
             if isinstance(images[0], torch.Tensor):
                 if output_type == 'pil':
-                    images = [Image.fromarray((img.cpu().numpy() * 255).astype(np.uint8) if img.max() <= 1 else img.cpu().numpy().astype(np.uint8)) for img in images]
+                    images = tensor_list_to_pil_image(images)
                 elif output_type == 'np':
-                    images = [(img.cpu().numpy() * 255).astype(np.uint8) if img.max() <= 1 else img.cpu().numpy() for img in images]
+                    # From tensor's [0, 1] to numpy's [0, 255]
+                    if images[0].max() <= 1.0:
+                        images = [ (img.cpu().numpy() * 255).astype(np.uint8) for img in images ]
+                    else:
+                        images = [ img.cpu().numpy().astype(np.uint8) for img in images ]
             elif isinstance(images[0], np.ndarray):
                 if output_type == 'pil':
-                    images = [Image.fromarray(img.astype(np.uint8)) for img in images]
+                    images = numpy_list_to_pil_image(images)
                 elif output_type == 'pt':
-                    images = [torch.from_numpy(img.astype(np.float32) / 255 if img.max() > 1 else img) for img in images]
-        
+                    # From numpy's [0, 255] to tensor's [0, 1]
+                    if images.max() > 1.0:
+                        images = images.astype(np.float32) / 255.0
+                    images = torch.from_numpy(images)
+            elif isinstance(images[0], Image.Image):
+                if output_type == 'np':
+                    images = [np.array(img) for img in images]
+                elif output_type == 'pt':
+                    images = [pil_image_to_tensor(img)[0] for img in images]
+            else:
+                raise ValueError(f'Unsupported image type in list: {type(images[0])}.')
+        else:
+            raise ValueError(f'Unsupported image input type: {type(images)}.')
         return images
 
     # ========================Preprocessing ========================
@@ -401,16 +418,16 @@ class Flux2Adapter(BaseAdapter):
         The condition images can be a list of images or a single image, shared across the batch.
         """
 
-        # 1. Setup
+        # 1. Preprocess inputs
         device = self.device
         if images is not None:
-            images = self._standardize_image_input(images, output_type='pil')
-        
-        # 2. Preprocess inputs
+            images = self._standardize_image_input(images, output_type='pt')
+
         if (
             (prompt is not None and (prompt_embeds is None or text_ids is None))
             or (images is not None and (image_latents is None or image_latent_ids is None))
         ):
+            print(f"prompt is None")
             if isinstance(prompt, str):
                 prompt = [prompt]
             if isinstance(images, Image.Image):
@@ -438,7 +455,7 @@ class Flux2Adapter(BaseAdapter):
         batch_size = prompt_embeds.shape[0]
         dtype = prompt_embeds.dtype
 
-        # 3. Prepare initial noise
+        # 2. Prepare initial noise
         num_channels_latents = self.pipeline.transformer.config.in_channels // 4
         latents, latent_ids = self.pipeline.prepare_latents(
             batch_size=batch_size,
@@ -450,7 +467,7 @@ class Flux2Adapter(BaseAdapter):
             generator=generator,
         )
 
-        # 4. Prepare timesteps
+        # 3. Prepare timesteps
         mu = compute_empirical_mu(image_seq_len=latents.shape[1], num_steps=num_inference_steps)
         timesteps = set_scheduler_timesteps(
             scheduler=self.pipeline.scheduler,
@@ -463,7 +480,7 @@ class Flux2Adapter(BaseAdapter):
         guidance = guidance.expand(latents.shape[0])
 
 
-        # 5. Run diffusion process
+        # 4. Run diffusion process
         all_latents = [latents]
         all_log_probs = [] if compute_log_prob else None
         extra_call_back_res = defaultdict(list)
@@ -518,10 +535,10 @@ class Flux2Adapter(BaseAdapter):
                         if val is not None:
                             extra_call_back_res[key].append(val)
 
-        # 6. Decode latents to images
+        # 5. Decode latents to images
         decoded_images = self.decode_latents(latents, latent_ids)
 
-        # 7. Create samples
+        # 6. Create samples
 
         # Transpose `extra_call_back_res` tensors to have batch dimension first
         # (T, B, ...) -> (B, T, ...)
@@ -593,21 +610,26 @@ class Flux2Adapter(BaseAdapter):
             prompt = [prompt]
         # Check for ragged inputs that require per-sample processing
         is_ragged_images = (
-            isinstance(images, list) and len(images) > 0 and isinstance(images[0], list)
-        ) # List[List[Image]]
+            ( isinstance(images, list) and len(images) > 0 and isinstance(images[0], list) ) # List[List[Image]]
+            or
+            ( isinstance(images, list) and len(images) > 0 and isinstance(images[0], torch.Tensor) and images[0].ndim == 4 ) # List[torch.Tensor : ndim=4]
+            or
+            ( isinstance(images, torch.Tensor) and images.ndim == 5 ) # torch.Tensor : ndim=5
+        )
         is_ragged_image_latents = (
             (
                 isinstance(image_latents, list) and len(image_latents) > 0
-                and isinstance(image_latents[0], torch.Tensor) and image_latents[0].ndim == 4
-            ) # List[torch.Tensor : ndim=4]
+                and isinstance(image_latents[0], torch.Tensor) and image_latents[0].ndim == 3
+            ) # List[torch.Tensor : ndim=3]
             or
             (
-                isinstance(image_latents, torch.Tensor) and image_latents.ndim == 5
-            ) # torch.Tensor : ndim=5
+                isinstance(image_latents, torch.Tensor) and image_latents.ndim == 4
+            ) # torch.Tensor : ndim=4
         )
         if not (is_ragged_images or is_ragged_image_latents):
             # Images are shared across the batch
             return self._inference(
+                # Ordinary args
                 images=images,
                 prompt=prompt,
                 height=height,
@@ -615,11 +637,14 @@ class Flux2Adapter(BaseAdapter):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
+                # Encoded prompt
                 prompt_ids=prompt_ids,
                 prompt_embeds=prompt_embeds,
                 text_ids=text_ids,
+                # Encoded images
                 image_latents=image_latents,
                 image_latent_ids=image_latent_ids,
+                # Other args
                 attention_kwargs=attention_kwargs,
                 max_sequence_length=max_sequence_length,
                 text_encoder_out_layers=text_encoder_out_layers,
@@ -630,26 +655,34 @@ class Flux2Adapter(BaseAdapter):
     
         # Ragged case: per-sample fallback
         if not self._has_warned_inference_fallback:
-        logger.warning(
-            "FLUX.2 does not support batch inference with varying condition images per sample. "
-            "Falling back to single-sample inference. This warning will only appear once."
-        )
-        self._has_warned_inference_fallback = True
+            logger.warning(
+                "FLUX.2 does not support batch inference with varying condition images per sample. "
+                "Falling back to single-sample inference. This warning will only appear once."
+            )
+            self._has_warned_inference_fallback = True
         # Process each sample individually by calling _inference
         batch_size = len(images) if is_ragged_images else len(image_latents)
 
         samples = []
         for idx in range(batch_size):
             sample = self._inference(
-                images=images[idx] if images is not None else None
-                prompt=prompt[idx] if prompt is not None else None
+                # Ordinary args
+                images=images[idx] if images is not None else None,
+                prompt=prompt[idx] if prompt is not None else None,
                 height=height,
                 width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator,
-                image_latents=image_latents[idx] if image_latents is not None else None
-                image_latent_ids=image_latent_ids[idx] if image_latent_ids is not None else None
+                # Encoded prompt
+                prompt_ids=prompt_ids[idx] if prompt_ids is not None else None,
+                prompt_embeds=prompt_embeds[idx] if prompt_embeds is not None else None,
+                text_ids=text_ids[idx] if text_ids is not None else None,
+                # Encoded image
+                image_latents=image_latents[idx] if image_latents is not None else None,
+                image_latent_ids=image_latent_ids[idx] if image_latent_ids is not None else None,
+
+                # Other args
                 attention_kwargs=attention_kwargs,
                 max_sequence_length=max_sequence_length,
                 text_encoder_out_layers=text_encoder_out_layers,

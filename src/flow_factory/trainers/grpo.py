@@ -85,13 +85,13 @@ class GRPOTrainer(BaseTrainer):
             batch = next(data_iter)
             
             with torch.no_grad(), self.autocast():
-                    sample_kwargs = {
-                        'compute_log_prob': True,
-                        **self.training_args,
-                    }
-                    sample_kwargs.update(**batch)
-                    sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
-                    sample_batch = self.adapter.inference(**sample_kwargs)
+                sample_kwargs = {
+                    'compute_log_prob': True,
+                    **self.training_args,
+                }
+                sample_kwargs.update(**batch)
+                sample_kwargs = filter_kwargs(self.adapter.inference, **sample_kwargs)
+                sample_batch = self.adapter.inference(**sample_kwargs)
             
             samples.extend(sample_batch)
 

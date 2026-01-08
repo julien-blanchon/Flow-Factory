@@ -329,127 +329,273 @@ def pil_image_to_tensor(image: Union[Image.Image, List[Image.Image]]) -> torch.T
     return torch.stack(tensors, dim=0) # Stack to (N, C, H, W)
 
 
+def _normalize_to_uint8(data: Union[torch.Tensor, np.ndarray]) -> Union[torch.Tensor, np.ndarray]:
+    """
+    Detect value range and normalize to [0, 255] uint8.
+    
+    Args:
+        data: Input tensor or array with values in one of three ranges:
+            - [0, 255]: Standard uint8 format (common in NumPy/PIL)
+            - [0, 1]: Normalized float format (common in PyTorch)
+            - [-1, 1]: Normalized float format (common in diffusion models)
+    
+    Returns:
+        Data normalized to [0, 255] and converted to uint8 dtype.
+        Returns torch.Tensor if input is tensor, np.ndarray if input is array.
+    
+    Note:
+        Range detection logic:
+            - If min < 0 and values in [-1, 1]: treated as [-1, 1] range
+            - Elif max <= 1.0: treated as [0, 1] range  
+            - Else: treated as [0, 255] range (no scaling applied)
+    """
+    is_tensor = isinstance(data, torch.Tensor)
+    
+    min_val = data.min().item() if is_tensor else data.min()
+    max_val = data.max().item() if is_tensor else data.max()
+    
+    if min_val >= -1.0 and max_val <= 1.0 and min_val < 0:
+        # [-1, 1] -> [0, 255]
+        data = (data + 1) / 2 * 255
+    elif max_val <= 1.0:
+        # [0, 1] -> [0, 255]
+        data = data * 255
+    # else: already [0, 255], no scaling needed
+    
+    if is_tensor:
+        return data.round().clamp(0, 255).to(torch.uint8)
+    else:
+        return np.clip(np.round(data), 0, 255).astype(np.uint8)
+
+
 def tensor_to_pil_image(tensor: torch.Tensor) -> List[Image.Image]:
     """
-        Convert a torch Tensor to a list of PIL Images.
-        Args:
-            tensor (torch.Tensor): Image tensor of shape (C, H, W) or (N, C, H, W)
-        Returns:
-            images (List[Image.Image]): list of PIL Image objects. If input is (C, H, W), returns a list with one image.
+    Convert a torch Tensor to a list of PIL Images.
+    
+    Args:
+        tensor: Image tensor of shape (C, H, W) or (N, C, H, W).
+            Supported value ranges:
+                - [0, 1]: Standard normalized tensor format
+                - [-1, 1]: Normalized tensor format (e.g., from diffusion models)
+    
+    Returns:
+        List of PIL Image objects. If input is (C, H, W), returns a list with one image.
+    
+    Example:
+        >>> img_tensor = torch.rand(3, 256, 256)  # [0, 1] range
+        >>> pil_images = tensor_to_pil_image(img_tensor)
+        >>> len(pil_images)
+        1
+        
+        >>> batch_tensor = torch.rand(4, 3, 256, 256) * 2 - 1  # [-1, 1] range
+        >>> pil_images = tensor_to_pil_image(batch_tensor)
+        >>> len(pil_images)
+        4
     """
-    if len(tensor.shape) == 3:
+    if tensor.dim() == 3:
         tensor = tensor.unsqueeze(0)
     
-    images = (tensor * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
-    images = images.transpose(0, 2, 3, 1)  # NCHW -> NHWC
-    images = [Image.fromarray(image) for image in images]
-    images = images
-    return images
+    tensor = _normalize_to_uint8(tensor).cpu().numpy()
+    tensor = tensor.transpose(0, 2, 3, 1)  # NCHW -> NHWC
+    
+    # Handle grayscale (single channel)
+    if tensor.shape[-1] == 1:
+        tensor = tensor.squeeze(-1)
+    
+    return [Image.fromarray(img) for img in tensor]
+
 
 def numpy_to_pil_image(array: np.ndarray) -> List[Image.Image]:
     """
-        Convert a NumPy array to a list of PIL Images.
-        Args:
-            array (np.ndarray): Image array of shape (C, H, W) or (N, C, H, W)
-        Returns:
-            images (List[Image.Image]): list of PIL Image objects. If input is (C, H, W), returns a list with one image.
-        1. If the input array has shape (C, H, W), it is treated as a single image and converted to (1, C, H, W).
-        2. The pixel values are assumed to be in the range [0, 1] or [0, 255]. If the maximum value is less than or equal to 1.0, the values are scaled to [0, 255].
-        3. The array is clipped to ensure all values are within [0, 255] and converted to uint8.
+    Convert a NumPy array to a list of PIL Images.
+    
+    Args:
+        array: Image array of shape (C, H, W) or (N, C, H, W).
+            Supported value ranges:
+                - [0, 255]: Standard uint8 format
+                - [0, 1]: Normalized float format
+                - [-1, 1]: Normalized float format (e.g., from diffusion models)
+    
+    Returns:
+        List of PIL Image objects. If input is (C, H, W), returns a list with one image.
+    
+    Note:
+        Channel dimension detection: If shape[1] is in (1, 3, 4), the array is 
+        assumed to be in NCHW format and will be transposed to NHWC.
+    
+    Example:
+        >>> img_array = np.random.rand(3, 256, 256).astype(np.float32)  # [0, 1]
+        >>> pil_images = numpy_to_pil_image(img_array)
+        >>> len(pil_images)
+        1
+        
+        >>> img_array = np.random.randint(0, 256, (4, 3, 256, 256), dtype=np.uint8)  # [0, 255]
+        >>> pil_images = numpy_to_pil_image(img_array)
+        >>> len(pil_images)
+        4
     """
-    if len(array.shape) == 3:
+    if array.ndim == 3:
         array = array[np.newaxis, ...]
     
-    # Clip and convert to uint8
-    if array.max() <= 1.0:
-        array = (array * 255).round()
-    array = np.clip(array, 0, 255).astype(np.uint8)
-
-    # Convert from NCHW to NHWC if needed
-    if array.shape[1] == 3:  # NCHW format
-        array = array.transpose(0, 2, 3, 1)  # NCHW -> NHWC
-
-    images = [Image.fromarray(image) for image in array]
-    images = images
-    return images
+    array = _normalize_to_uint8(array)
+    
+    # NCHW -> NHWC if channel dim detected
+    if array.shape[1] in (1, 3, 4):
+        array = array.transpose(0, 2, 3, 1)
+    
+    # Handle grayscale (single channel)
+    if array.shape[-1] == 1:
+        array = array.squeeze(-1)
+    
+    return [Image.fromarray(img) for img in array]
 
 
 def tensor_list_to_pil_image(tensor_list: List[torch.Tensor]) -> List[Image.Image]:
     """
-        Convert a list of torch Tensors to a list of PIL Images.
-        Args:
-            tensor_list (List[torch.Tensor]): list of image tensors, each of shape (C, H, W) or (1, C, H, W). Each tensor can have different shape but same dimension.
-        Returns:
-            images (List[Image.Image]): list of PIL Image objects
-        Note:
-            If the input tensors have different shapes, they will be processed individually.
+    Convert a list of torch Tensors to a list of PIL Images.
+    
+    Args:
+        tensor_list: List of image tensors, each of shape (C, H, W) or (1, C, H, W).
+            Each tensor can have different shapes.
+            Supported value ranges:
+                - [0, 1]: Standard normalized tensor format
+                - [-1, 1]: Normalized tensor format (e.g., from diffusion models)
+    
+    Returns:
+        List of PIL Image objects, one per input tensor.
+    
+    Note:
+        - If all tensors have the same shape, they are stacked and batch-processed 
+          for efficiency.
+        - If tensors have different shapes, they are processed individually.
+        - Tensors with shape (1, C, H, W) are automatically squeezed to (C, H, W).
+    
+    Example:
+        >>> tensors = [torch.rand(3, 256, 256) for _ in range(4)]  # same shape
+        >>> pil_images = tensor_list_to_pil_image(tensors)
+        >>> len(pil_images)
+        4
+        
+        >>> tensors = [torch.rand(3, 256, 256), torch.rand(3, 512, 512)]  # different shapes
+        >>> pil_images = tensor_list_to_pil_image(tensors)
+        >>> len(pil_images)
+        2
     """
     if not tensor_list:
         return []
-
-    # If all image tensors have the same shape, stack them directly
-    if all(tensor.shape == tensor_list[0].shape for tensor in tensor_list):
-        batch = torch.stack([
-            t if t.dim() == 3 else t.squeeze(0)
-            for t in tensor_list
-        ], dim=0)
-        # Normalize, to uint8
-        batch = (batch * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
-        # NCHW -> NHWC
-        if batch.shape[1] == 3:
+    
+    # Uniform shape -> batch process for efficiency
+    if all(t.shape == tensor_list[0].shape for t in tensor_list):
+        batch = torch.stack(
+            [t.squeeze(0) if t.dim() == 4 else t for t in tensor_list], 
+            dim=0
+        )
+        batch = _normalize_to_uint8(batch).cpu().numpy()
+        
+        # NCHW -> NHWC if channel dim detected
+        if batch.shape[1] in (1, 3, 4):
             batch = batch.transpose(0, 2, 3, 1)
+        
+        # Handle grayscale
+        if batch.shape[-1] == 1:
+            batch = batch.squeeze(-1)
+        
         return [Image.fromarray(img) for img in batch]
-    else:
-        # Process each tensor individually
-        images = []
-        for t in tensor_list:
-            if t.dim() == 4 and t.shape[0] == 1:
-                t = t.squeeze(0)
-            img = (t * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
-            if img.shape[0] == 3:
-                img = img.transpose(1, 2, 0)  # CHW -> HWC
-            images.append(Image.fromarray(img))
-        return images
+    
+    # Variable shape -> process individually
+    images = []
+    for t in tensor_list:
+        if t.dim() == 4:
+            t = t.squeeze(0)
+        
+        img = _normalize_to_uint8(t).cpu().numpy()
+        
+        # CHW -> HWC if channel dim detected
+        if img.shape[0] in (1, 3, 4):
+            img = img.transpose(1, 2, 0)
+        
+        # Handle grayscale
+        if img.ndim == 3 and img.shape[-1] == 1:
+            img = img.squeeze(-1)
+        
+        images.append(Image.fromarray(img))
+    
+    return images
+
 
 def numpy_list_to_pil_image(numpy_list: List[np.ndarray]) -> List[Image.Image]:
     """
-        Convert a list of NumPy arrays to a list of PIL Images.
-        Args:
-            numpy_list (List[np.ndarray]): list of image arrays, each of shape (C, H, W) or (1, C, H, W). Each array can have different shape but same dimension.
-        Returns:
-            images (List[Image.Image]): list of PIL Image objects
-        Note:
-            If the input arrays have different shapes, they will be processed individually.
+    Convert a list of NumPy arrays to a list of PIL Images.
+    
+    Args:
+        numpy_list: List of image arrays, each of shape (C, H, W) or (1, C, H, W).
+            Each array can have different shapes.
+            Supported value ranges:
+                - [0, 255]: Standard uint8 format
+                - [0, 1]: Normalized float format
+                - [-1, 1]: Normalized float format (e.g., from diffusion models)
+    
+    Returns:
+        List of PIL Image objects, one per input array.
+    
+    Note:
+        - If all arrays have the same shape, they are stacked and batch-processed 
+          for efficiency.
+        - If arrays have different shapes, they are processed individually.
+        - Arrays with shape (1, C, H, W) are automatically squeezed to (C, H, W).
+    
+    Example:
+        >>> arrays = [np.random.rand(3, 256, 256) for _ in range(4)]  # [0, 1], same shape
+        >>> pil_images = numpy_list_to_pil_image(arrays)
+        >>> len(pil_images)
+        4
+        
+        >>> arrays = [np.random.randint(0, 256, (3, 256, 256), dtype=np.uint8),
+        ...           np.random.rand(3, 512, 512) * 2 - 1]  # mixed range & shape
+        >>> pil_images = numpy_list_to_pil_image(arrays)
+        >>> len(pil_images)
+        2
     """
     if not numpy_list:
         return []
-    # If all image arrays have the same shape, stack them directly
+    
+    # Uniform shape -> batch process for efficiency
     if all(arr.shape == numpy_list[0].shape for arr in numpy_list):
-        batch = np.stack([
-            arr if arr.ndim == 3 else arr.squeeze(0)
-            for arr in numpy_list
-        ], axis=0)
-        # Normalize, to uint8
-        if batch.max() <= 1.0:
-            batch = (batch * 255).round()
-        batch = np.clip(batch, 0, 255).astype(np.uint8)
-        # NCHW -> NHWC
-        if batch.shape[1] == 3:
+        batch = np.stack(
+            [arr.squeeze(0) if arr.ndim == 4 else arr for arr in numpy_list], 
+            axis=0
+        )
+        batch = _normalize_to_uint8(batch)
+        
+        # NCHW -> NHWC if channel dim detected
+        if batch.shape[1] in (1, 3, 4):
             batch = batch.transpose(0, 2, 3, 1)
+        
+        # Handle grayscale
+        if batch.shape[-1] == 1:
+            batch = batch.squeeze(-1)
+        
         return [Image.fromarray(img) for img in batch]
-    else:
-        # Process each array individually
-        images = []
-        for arr in numpy_list:
-            if arr.ndim == 4 and arr.shape[0] == 1:
-                arr = arr.squeeze(0)
-            if arr.max() <= 1.0:
-                arr = (arr * 255).round()
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-            if arr.shape[0] == 3:
-                arr = arr.transpose(1, 2, 0)  # CHW -> HWC
-            images.append(Image.fromarray(arr))
-        return images
+    
+    # Variable shape -> process individually
+    images = []
+    for arr in numpy_list:
+        if arr.ndim == 4:
+            arr = arr.squeeze(0)
+        
+        arr = _normalize_to_uint8(arr)
+        
+        # CHW -> HWC if channel dim detected
+        if arr.shape[0] in (1, 3, 4):
+            arr = arr.transpose(1, 2, 0)
+        
+        # Handle grayscale
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = arr.squeeze(-1)
+        
+        images.append(Image.fromarray(arr))
+    
+    return images
 
 def divide_latents(latents: torch.Tensor, H: int, W: int, h: int, w: int) -> torch.Tensor:
     """
