@@ -24,7 +24,7 @@
 | Model | Model Size | Model Type |
 |-------|------------|-----------|
 | [FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) | 13B | flux1 |
-| [FLUX.1-Kontext-dev](https://huggingface.co/black-forest-labs/FLUX.1) | 13B | flux1 |
+| [FLUX.1-Kontext-dev](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev) | 13B | flux1 |
 | [FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX.2-dev) | 30B | flux2 |
 | [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) | 12B | z-image |
 | [Qwen-Image](https://huggingface.co/Qwen/Qwen-Image) | 20B | qwen-image |
