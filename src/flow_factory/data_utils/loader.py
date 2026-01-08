@@ -160,7 +160,7 @@ def get_dataloader(
     train_preprocess_kwargs.update(
         {
             'is_train': True,
-            'resolution': training_args.resolution,
+            **training_args,
         }
     )
     dataset = _create_or_load_dataset(
@@ -196,7 +196,7 @@ def get_dataloader(
         test_preprocess_kwargs.update(
             {
                 'is_train': False,
-                'resolution': eval_args.resolution,
+                **eval_args,
             }
         )
         test_dataset = _create_or_load_dataset(

@@ -18,7 +18,6 @@ data:
   force_reprocess: true  # Force reprocessing of the dataset
   cache_dir: "~/jcy/.cache/flow_factory/datasets" # Cache directory for preprocessed datasets
   max_dataset_size: 1000  # Limit the maximum number of samples in the dataset
-  condition_image_size: [1024, 1024] # Max condition image resolution, int or [height, width]
 
 # Model Configuration
 model:
@@ -44,7 +43,8 @@ train:
 
   # Image settings
   resolution: 512  # Can be int or [height, width]
-  
+  condition_image_size: [512, 512] # Max condition image resolution, int or [height, width]
+
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device. For image-to-image task, this will always fallback to 1.
   group_size: 16  # Group size for GRPO sampling
@@ -84,6 +84,8 @@ train:
 # Evaluation settings
 eval:
   resolution: 1024  # Evaluation resolution
+  condition_image_size: [1024, 1024] # Max condition image resolution, int or [height, width]
+
   per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 4  # Guidance scale for sampling
