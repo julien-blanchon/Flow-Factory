@@ -6,6 +6,7 @@ import math
 import torch
 import numpy as np
 from PIL import Image
+import imageio
 from typing import Any, Dict, List, Union, Optional, Tuple
 from dataclasses import dataclass, is_dataclass, asdict, field
 from ..models.samples import BaseSample, ImageConditionSample, VideoConditionSample
@@ -182,7 +183,6 @@ class LogVideo:
         fd, path = tempfile.mkstemp(suffix='.mp4')
         try:
             os.close(fd)
-            import imageio
             imageio.mimwrite(path, arr, fps=self.fps, codec='libx264', output_params=['-pix_fmt', 'yuv420p'])
             self._temp_path = path
         except Exception:
