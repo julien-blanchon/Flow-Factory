@@ -196,7 +196,7 @@ class LogVideo:
                 fps=self.fps, 
                 format='FFMPEG',
                 codec='libx264', 
-                output_params=['-pix_fmt', 'yuv420p']
+               pixelformat='yuv420p',
             )
             self._temp_path = path
         except Exception:
