@@ -259,7 +259,6 @@ class Wan2_I2V_Adapter(BaseAdapter):
         device: Optional[torch.device] = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
-        
         images = self._standardize_image_input(
             images,
             output_type='pil',
@@ -269,12 +268,20 @@ class Wan2_I2V_Adapter(BaseAdapter):
             raise ValueError(f"Invalid image input type: {type(images)}. Must be a PIL Image, numpy array, torch tensor, or a list of these types.")
 
         device = device or self.device
-        images = self.pipeline.image_processor(images=images, return_tensors="pt").to(device)
-        image_embeds = self.pipeline.image_encoder(**images, output_hidden_states=True)
-        return {
-            'image_embeds': image_embeds.hidden_states[-2],
-            'condition_images': images['pixel_values'], # Shape: (B, C, H, W), where H = W = 224 as CLIP default, normalized in [-1, 1]
-        }
+        res = {}
+        batch_size = len(images)
+        # only Wan 2.1 I2V transformer accepts image_embeds, else None directly
+        if self.pipeline.transformer is None or self.pipeline.transformer.config.image_dim is None:
+            images = self.pipeline.image_processor(images=images, return_tensors="pt").to(device)
+            image_embeds = self.pipeline.image_encoder(**images, output_hidden_states=True)
+            res = {
+                'image_embeds': image_embeds.hidden_states[-2],
+                'condition_images': images['pixel_values'], # Shape: (B, C, H, W), where H = W = 224 as CLIP default, normalized in [-1, 1]
+            }
+        else:
+            res = None
+
+        return res
     
     def _standardize_image_input(
         self,

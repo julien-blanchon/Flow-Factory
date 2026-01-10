@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.distributed as dist
 
 from PIL import Image
+import numpy as np
 from safetensors.torch import save_file, load_file
 from diffusers.utils.outputs import BaseOutput
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -1514,12 +1515,19 @@ class BaseAdapter(ABC):
         ]:
             if input is not None:
                 logger.info(f"Preprocessing input for {encoder_method.__name__}...")
-                results.update(
-                    encoder_method(
+                res = encoder_method(
                         input,
                         **(filter_kwargs(encoder_method, **kwargs))
                     )
-                ) 
+                if (
+                    isinstance(res, dict)
+                    and res
+                    and all(isinstance(v, (list, torch.Tensor, np.ndarray)) for v in res.values())
+                ):
+                    results.update(res)
+                else:
+                    raise ValueError(f"Encoder method {encoder_method.__name__} should return a non-empty dict and each key maps to a list or tensor.")
+
         return results
 
     @abstractmethod
