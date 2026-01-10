@@ -828,7 +828,7 @@ class QwenImageEditPlusAdapter(BaseAdapter):
 
                 # Condition images
                 image_latents=image_latents[b] if image_latents is not None else None,
-                condition_images=condition_images[b] if condition_images is not None else None,
+                condition_images=condition_images if condition_images is not None else None,
                 img_shapes=img_shapes[b],
 
                 # Prompt

@@ -17,6 +17,8 @@ from ..utils.base import (
     video_frames_to_tensor,
     tensor_to_video_frames,
     numpy_to_video_frames,
+    tensor_list_to_pil_image,
+    numpy_list_to_pil_image,
 )
 
 
@@ -53,12 +55,19 @@ def _to_pil_list(images: Union[Image.Image, List[Image.Image], torch.Tensor, np.
         return []
     if isinstance(images, Image.Image):
         return [images]
-    if isinstance(images, list) and images and isinstance(images[0], Image.Image):
-        return images
     if isinstance(images, torch.Tensor):
         return tensor_to_pil_image(images)
     if isinstance(images, np.ndarray):
         return numpy_to_pil_image(images)
+
+    if isinstance(images, list):
+        if isinstance(images[0], Image.Image):
+            return images
+        elif isinstance(images[0], torch.Tensor):
+            return tensor_list_to_pil_image(images)
+        elif isinstance(images[0], np.ndarray):
+            return numpy_list_to_pil_image(images)
+
     return []
 
 # ------------------------------------------- LogImage & LogVideo Classes -------------------------------------------
