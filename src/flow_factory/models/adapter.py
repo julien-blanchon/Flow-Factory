@@ -1514,7 +1514,6 @@ class BaseAdapter(ABC):
             (videos, self.encode_video),
         ]:
             if input is not None:
-                logger.info(f"Preprocessing input for {encoder_method.__name__}...")
                 res = encoder_method(
                         input,
                         **(filter_kwargs(encoder_method, **kwargs))
