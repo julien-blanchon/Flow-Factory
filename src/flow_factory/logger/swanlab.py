@@ -2,8 +2,10 @@
 from typing import Any, Dict
 import swanlab
 from .abc import Logger
-from .formatting import LogImage, LogVideo
+from .formatting import LogImage, LogVideo, LogTable
+from ..utils.logger_utils import setup_logger
 
+logger = setup_logger(__name__)
 
 class SwanlabLogger(Logger):
     def _init_platform(self):
@@ -19,6 +21,8 @@ class SwanlabLogger(Logger):
             return swanlab.Image(value.value, caption=value.caption)
         elif isinstance(value, LogVideo):
             return swanlab.Video(value.value, caption=value.caption)
+        elif isinstance(value, LogTable):
+            logger.warning("SwanLab does not support LogTable natively. Skip conversion.")
         return value
 
     def _log_impl(self, data: Dict, step: int):

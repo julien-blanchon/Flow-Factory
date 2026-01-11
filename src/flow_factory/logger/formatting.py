@@ -1,4 +1,6 @@
 # src/flow_factory/logger/formatting.py
+from __future__ import annotations
+
 import os
 import tempfile
 import math
@@ -72,6 +74,16 @@ def _to_pil_list(images: Union[Image.Image, List[Image.Image], torch.Tensor, np.
             return numpy_list_to_pil_image(images)
 
     return []
+
+def _build_sample_caption(sample : BaseSample, max_length: Optional[int] = None) -> str:
+    """Build caption from reward and prompt."""
+    parts = []
+    if 'reward' in sample.extra_kwargs:
+        parts.append(f"{sample.extra_kwargs['reward']:.2f}")
+    if sample.prompt:
+        parts.append(sample.prompt[:max_length] + "..." if (max_length is not None and len(sample.prompt) > max_length) else sample.prompt)
+    return " | ".join(parts)
+
 
 # ------------------------------------------- LogImage & LogVideo Classes -------------------------------------------
 
@@ -247,6 +259,67 @@ class LogVideo:
     def __exit__(self, *_):
         self.cleanup()
 
+@dataclass
+class LogTable:
+    """Table for [cond_1, cond_2, ..., cond_n, generation] logging."""
+    columns: List[str] = field(default_factory=list)
+    rows: List[List[Union[LogImage, LogVideo]]] = field(default_factory=list)
+    
+    @classmethod
+    def from_i2v_samples(cls, samples: List["I2VSample"]) -> Optional[LogTable]:
+        """Build table from I2V samples: condition_images -> video."""
+        if not samples or not hasattr(samples[0], 'condition_images'):
+            return None
+        
+        # Get column count from first valid sample
+        first_conds = _to_pil_list(samples[0].condition_images)
+        n_conds = len(first_conds)
+        columns = [f"condition_image_{i}" for i in range(n_conds)] + ["generation"]
+        
+        rows = []
+        for s in samples:
+            if s.video is None:
+                continue
+            conds = _to_pil_list(s.condition_images)[:n_conds]
+            # Pad if needed
+            while len(conds) < n_conds:
+                conds.append(conds[-1] if conds else Image.new('RGB', (64, 64)))
+            
+            caption = _build_sample_caption(s)
+            row = [LogImage(c) for c in conds] + [LogVideo(s.video, caption=caption)]
+            rows.append(row)
+        
+        return cls(columns=columns, rows=rows) if rows else None
+    
+    @classmethod
+    def from_v2v_samples(cls, samples: List["V2VSample"]) -> Optional[LogTable]:
+        """Build table from V2V samples: condition_videos -> video."""
+        if not samples or not hasattr(samples[0], 'condition_videos'):
+            return None
+        
+        first_conds = samples[0].condition_videos
+        n_conds = len(first_conds) if isinstance(first_conds, list) else 1
+        columns = [f"condition_video_{i}" for i in range(n_conds)] + ["generation"]
+        
+        rows = []
+        for s in samples:
+            if s.video is None:
+                continue
+            conds = s.condition_videos if isinstance(s.condition_videos, list) else [s.condition_videos]
+            conds = conds[:n_conds]
+            
+            caption = _build_sample_caption(s)
+            row = [LogVideo(c) for c in conds] + [LogVideo(s.video, caption=caption)]
+            rows.append(row)
+        
+        return cls(columns=columns, rows=rows) if rows else None
+    
+    def cleanup(self):
+        for row in self.rows:
+            for item in row:
+                if hasattr(item, 'cleanup'):
+                    item.cleanup()
+
 # ----------------------------------- LogFormatter Class -----------------------------------
 class LogFormatter:
     """
@@ -275,88 +348,92 @@ class LogFormatter:
             clean_data[k] = cls._process_value(v)
         
         return clean_data
-    
-    @classmethod
-    def _build_caption(cls, sample: BaseSample, max_length : Optional[int] = None) -> str:
-        """Build caption from reward and prompt."""
-        parts = []
-        if 'reward' in sample.extra_kwargs:
-            parts.append(f"{sample.extra_kwargs['reward']:.2f}")
-        if sample.prompt:
-            parts.append(sample.prompt[:max_length] + "..." if (max_length is not None and len(sample.prompt) > max_length) else sample.prompt)
-        return " | ".join(parts)
 
     @classmethod
-    def _process_sample(cls, samples: List[BaseSample]) -> List[Union[LogImage, LogVideo]]:
+    def _process_sample_list(cls, samples: List[BaseSample]) -> Union[List[Union[LogImage, LogVideo]], LogTable]:
         """Dispatch to appropriate handler based on sample type."""
-        results = []
         # If there are inherit relationships, order matters - more specific types should come first
         sample_cls_to_handler = {
-            V2VSample: cls._process_v2v_sample,
-            I2VSample: cls._process_i2v_sample,
-            I2ISample: cls._process_i2i_sample,
-            T2VSample: cls._process_t2v_sample,
-            T2ISample: cls._process_t2i_sample,
+            V2VSample: cls._process_v2v_samples,
+            I2VSample: cls._process_i2v_samples,
+            I2ISample: cls._process_i2i_samples,
+            T2VSample: cls._process_t2v_samples,
+            T2ISample: cls._process_t2i_samples,
         }
 
-        def get_handler(sample: BaseSample):
-            for cls_type, handler in sample_cls_to_handler.items():
-                if isinstance(sample, cls_type):
-                    return handler
-            return cls._process_base_sample
+        first_cls = type(samples[0])
+        if not all(isinstance(s, first_cls) for s in samples):
+            logger.warning("Mixed sample types detected; unexpected behavior may occur.")
 
-        for sample in samples:
-            result = get_handler(sample)(sample)
-            if result:
-                results.append(result)
+        handler = sample_cls_to_handler.get(first_cls, cls._process_base_samples)
+
+        result = handler(samples)
+        return result
+
+    @classmethod
+    def _process_base_samples(cls, samples: List[BaseSample]) -> List[Union[LogImage, LogVideo, None]]:
+        """Handle basic sample with single generated image."""
+        def _process_single_base_sample(s: BaseSample) -> Optional[Union[LogImage, LogVideo]]:
+            if s.image is not None:
+                return LogImage(s.image, caption=_build_sample_caption(s))
+            elif s.video is not None:
+                return LogVideo(s.video, caption=_build_sample_caption(s))
+            return None
+        
+        results = [_process_single_base_sample(s) for s in samples]
+
         return results
     
     @classmethod
-    def _process_base_sample(cls, sample: BaseSample) -> Optional[Union[LogImage, LogVideo]]:
-        """Handle basic sample with single generated image."""
-        if sample.image is not None:
-            return LogImage(sample.image, caption=cls._build_caption(sample))
-        elif sample.video is not None:
-            return LogVideo(sample.video, caption=cls._build_caption(sample))
-
-        return None
-    
-    @classmethod
-    def _process_t2i_sample(cls, sample: T2ISample) -> Optional[LogImage]:
+    def _process_t2i_samples(cls, samples: List[T2ISample]) -> List[Union[LogImage, None]]:
         """Handle text-to-image sample with generated image."""
-        if sample.image is None:
-            return None
-        return LogImage(sample.image, caption=cls._build_caption(sample))
-    
+        def _process_single_t2i_sample(sample: T2ISample) -> Optional[LogImage]:
+            if sample.image is None:
+                return None
+            return LogImage(sample.image, caption=_build_sample_caption(sample))
+
+        results = [_process_single_t2i_sample(s) for s in samples]
+        return results
+        
     @classmethod
-    def _process_t2v_sample(cls, sample: T2VSample) -> Optional[LogVideo]:
+    def _process_t2v_samples(cls, samples: List[T2VSample]) -> List[Union[LogVideo, None]]:
         """Handle text-to-video sample with generated video."""
-        if sample.video is None:
-            return None
-        return LogVideo(sample.video, caption=cls._build_caption(sample))
+        def _process_single_t2v_sample(sample: T2VSample) -> Optional[LogVideo]:
+            if sample.video is None:
+                return None
+            return LogVideo(sample.video, caption=_build_sample_caption(sample))
+
+        results = [_process_single_t2v_sample(s) for s in samples]
+        return results
     
     @classmethod
-    def _process_i2i_sample(cls, sample: I2ISample) -> Optional[LogImage]:
+    def _process_i2i_samples(cls, samples: List[I2ISample]) -> List[Union[LogImage, None]]:
         """Handle sample with condition images + generated image, concatenated in grid."""
-        cond_imgs = _to_pil_list(sample.condition_images)
-        gen_imgs = _to_pil_list(sample.image)
-        all_imgs = cond_imgs + gen_imgs
+        def _process_single_i2i_sample(sample: I2ISample) -> Optional[LogImage]:
+            cond_imgs = _to_pil_list(sample.condition_images)
+            gen_imgs = _to_pil_list(sample.image)
+            all_imgs = cond_imgs + gen_imgs
+            
+            if not all_imgs:
+                return None
         
-        if not all_imgs:
-            return None
+            grid = _concat_images_grid(all_imgs) if len(all_imgs) > 1 else all_imgs[0]
+            return LogImage(grid, caption=_build_sample_caption(sample))
         
-        grid = _concat_images_grid(all_imgs) if len(all_imgs) > 1 else all_imgs[0]
-        return LogImage(grid, caption=cls._build_caption(sample))
+        results = [_process_single_i2i_sample(s) for s in samples]
+        return results
     
     @classmethod
-    def _process_i2v_sample(cls, sample: I2VSample) -> Optional[LogVideo]:
-        # TODO: Implement better concatenation for I2V samples
-        pass
+    def _process_i2v_samples(cls, samples: List[I2VSample]) -> Union[LogTable, None]:
+        """Handle sample with condition images + generated video, as LogTable."""
+        table = LogTable.from_i2v_samples(samples)
+        return table
     
     @classmethod
-    def _process_v2v_sample(cls, sample: V2VSample) -> Optional[LogVideo]:
-        # TODO: Implement better concatenation for V2V samples
-        pass
+    def _process_v2v_samples(cls, samples: List[V2VSample]) -> Union[LogTable, None]:
+        """Handle sample with condition videos + generated video, as LogTable."""
+        table = LogTable.from_v2v_samples(samples)
+        return table
 
     @classmethod
     def _process_value(cls, value: Any) -> Any:
@@ -365,7 +442,7 @@ class LogFormatter:
         if isinstance(value, BaseSample):
             value = [value]
         if cls._is_sample_collection(value):
-            return cls._process_sample(value)
+            return cls._process_sample_list(value)
 
         # Rule 1: PIL Image
         if isinstance(value, Image.Image):

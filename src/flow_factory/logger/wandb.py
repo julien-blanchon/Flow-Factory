@@ -2,7 +2,7 @@
 from typing import Any, Dict
 import wandb
 from .abc import Logger
-from .formatting import LogImage, LogVideo
+from .formatting import LogImage, LogVideo, LogTable
 
 
 class WandbLogger(Logger):
@@ -19,7 +19,13 @@ class WandbLogger(Logger):
             return wandb.Image(value.value, caption=value.caption)
         elif isinstance(value, LogVideo):
             return wandb.Video(value.value, caption=value.caption, format=value.format)
-        return value
+        elif isinstance(value, LogTable):
+            data = [
+                [self._convert_to_platform(item) for item in row]
+                for row in value.rows
+            ]
+            return wandb.Table(columns=value.columns, data=data)
+        return value        
 
     def _log_impl(self, data: Dict, step: int):
         self.platform.log(data, step=step)

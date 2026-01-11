@@ -4,7 +4,7 @@ from typing import Union, Optional, Dict, Any, List
 
 from ..hparams import *
 from ..models.adapter import BaseSample
-from .formatting import LogFormatter, LogImage, LogVideo
+from .formatting import LogFormatter, LogImage, LogVideo, LogTable
 
 class Logger(ABC):
     platform: Any
@@ -34,9 +34,10 @@ class Logger(ABC):
             formatted_dict = {k: v for k, v in formatted_dict.items() if k in valid_keys}
 
         # 3. Convert IR to Platform Objects
-        final_dict = {}
-        for k, v in formatted_dict.items():
-            final_dict[k] = self._recursive_convert(v)
+        final_dict = {
+            k: self._recursive_convert(v)
+            for k, v in formatted_dict.items()
+        }
 
         # 4. Actual Logging
         if final_dict:
@@ -50,21 +51,21 @@ class Logger(ABC):
     def _recursive_convert(self, value: Any) -> Any:
         """Helper to handle lists recursively."""
         if isinstance(value, (list, tuple)):
-            return [self._recursive_convert(v) for v in value]
+            return [self._recursive_convert(v) for v in value if v is not None] # filter None
         return self._convert_to_platform(value)
     
     def _cleanup_temp_files(self, data: Dict):
         for value in data.values():
-            if isinstance(value, (LogImage, LogVideo)):
+            if isinstance(value, (LogImage, LogVideo, LogTable)):
                 value.cleanup()
             elif isinstance(value, (list, tuple)):
                 for item in value:
-                    if isinstance(item, (LogImage, LogVideo)):
+                    if isinstance(item, (LogImage, LogVideo, LogTable)):
                         item.cleanup()
 
     @abstractmethod
     def _convert_to_platform(self, value: Any) -> Any:
-        """Convert SINGLE LogImage/LogVideo to wandb.Image/swanlab.Image etc."""
+        """Convert SINGLE LogImage/LogVideo/LogTable to wandb.Image/swanlab.Image etc."""
         pass
 
     @abstractmethod
