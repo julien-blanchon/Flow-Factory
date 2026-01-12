@@ -58,6 +58,9 @@ class Flux2Adapter(BaseAdapter):
     
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
+        self.pipeline: Flux2Pipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
+        
         self._has_warned_inference_fallback = False
         self._has_warned_forward_fallback = False
         self._has_warned_preprocess_fallback = False

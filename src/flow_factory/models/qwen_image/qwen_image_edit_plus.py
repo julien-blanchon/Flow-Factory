@@ -19,11 +19,12 @@ from diffusers.utils.torch_utils import randn_tensor
 from ..adapter import BaseAdapter
 from ..samples import I2ISample
 from ...hparams import *
-from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
-from ...utils.base import filter_kwargs, is_valid_image, is_valid_image_batch
+from ...scheduler import FlowMatchEulerDiscreteSDEScheduler, SDESchedulerOutput, set_scheduler_timesteps
 from ...utils.logger_utils import setup_logger
 from ...utils.base import (
     filter_kwargs,
+    is_valid_image,
+    is_valid_image_batch,
     is_pil_image_batch_list,
     is_pil_image_list,
     tensor_to_pil_image,
@@ -84,9 +85,11 @@ class QwenImageEditPlusAdapter(BaseAdapter):
     
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
+        self.pipeline: QwenImageEditPlusPipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
+
         self._warned_cfg_no_neg_prompt = False
         self._warned_no_cfg = False
-
         self._has_warned_inference_fallback = False
         self._has_warned_forward_fallback = False
         self._has_warned_preprocess_fallback = False

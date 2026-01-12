@@ -34,6 +34,8 @@ class Flux1Adapter(BaseAdapter):
     
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
+        self.pipeline: FluxPipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
     
     def load_pipeline(self) -> FluxPipeline:
         return FluxPipeline.from_pretrained(

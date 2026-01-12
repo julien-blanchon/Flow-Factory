@@ -16,7 +16,7 @@ from accelerate import Accelerator
 from ..adapter import BaseAdapter
 from ..samples import T2ISample
 from ...hparams import *
-from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps
+from ...scheduler import SDESchedulerOutput, set_scheduler_timesteps, FlowMatchEulerDiscreteSDEScheduler
 from ...utils.base import filter_kwargs
 from ...utils.logger_utils import setup_logger
 
@@ -35,6 +35,9 @@ class QwenImageAdapter(BaseAdapter):
     
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
+        self.pipeline: QwenImagePipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
+
         self._warned_cfg_no_neg_prompt = False
         self._warned_no_cfg = False
     

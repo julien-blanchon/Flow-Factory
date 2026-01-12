@@ -110,6 +110,9 @@ class Flux1KontextAdapter(BaseAdapter):
     
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
+        self.pipeline: FluxKontextPipeline
+        self.scheduler: FlowMatchEulerDiscreteSDEScheduler
+
         self._has_warned_multi_image = False
     
     def load_pipeline(self) -> FluxKontextPipeline:

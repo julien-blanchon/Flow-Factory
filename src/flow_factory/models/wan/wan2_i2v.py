@@ -53,6 +53,8 @@ class WanI2VSample(I2VSample):
 class Wan2_I2V_Adapter(BaseAdapter):
     def __init__(self, config: Arguments, accelerator : Accelerator):
         super().__init__(config, accelerator)
+        self.pipeline: WanImageToVideoPipeline
+        self.scheduler: UniPCMultistepSDEScheduler
         self._has_warned_multi_image = False
     
     def load_pipeline(self) -> WanImageToVideoPipeline:
