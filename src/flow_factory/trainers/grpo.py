@@ -24,7 +24,31 @@ from ..utils.logger_utils import setup_logger
 logger = setup_logger(__name__)
 
 
+# ============================ Helper Functions ============================
+def compute_group_zero_std_ratio(rewards: np.ndarray, group_indices: np.ndarray, eps: float = 1e-6) -> float:
+    """
+    Compute the fraction of groups with near-zero standard deviation.
+    
+    Args:
+        rewards: Array of reward values
+        group_indices: Array mapping each sample to its group
+        eps: Threshold for considering std as zero
+        
+    Returns:
+        Fraction of groups with std < eps
+    """
+    unique_groups = np.unique(group_indices)
+    zero_std_count = 0
+    
+    for group_id in unique_groups:
+        group_rewards = rewards[group_indices == group_id]
+        if np.std(group_rewards) < eps:
+            zero_std_count += 1
+    
+    return zero_std_count / len(unique_groups)
 
+
+# ============================ GRPO Trainer ============================
 class GRPOTrainer(BaseTrainer):
     """
     GRPO Trainer for Flow Matching models.
@@ -149,7 +173,7 @@ class GRPOTrainer(BaseTrainer):
 
         Notes:
             - If you want to customize advantage computation (e.g., different normalization),
-            you can override this method in a subclass.
+            you can override this method in a subclass, e.g., for GDPO.
         """
 
         # 1. Get rewards
@@ -189,14 +213,20 @@ class GRPOTrainer(BaseTrainer):
             advantages[mask] = (group_rewards - mean) / std
 
         # 5. Log statistics
+        # Log per-reward mean
         _log_data = {
             f'train/reward_{key}_mean': np.mean(value)
             for key, value in gathered_rewards.items()
         }
+        # Log per-reward std
         _log_data.update({
             f'train/reward_{key}_std': np.std(value)
             for key, value in gathered_rewards.items()
         })
+        # Log aggregated reward zero std ratio
+        zero_std_ratio = compute_group_zero_std_ratio(aggregated_rewards, group_indices)
+        _log_data['train/reward_zero_std_ratio'] = zero_std_ratio
+        # Log other stats
         _log_data.update({
             'train/reward_mean': np.mean(aggregated_rewards),
             'train/reward_std': np.std(aggregated_rewards),
@@ -414,7 +444,7 @@ class GRPOTrainer(BaseTrainer):
             self.accelerator.wait_for_everyone()
 
 
-
+# ============================ GRPO-Guard Trainer ============================
 class GRPOGuardTrainer(GRPOTrainer):
     """
     GRPOGuard Trainer with reweighted loss.
@@ -561,3 +591,83 @@ class GRPOGuardTrainer(GRPOTrainer):
                 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+
+# =========================== GDPO Trainer ============================
+class GDPOTrainer(GRPOTrainer):
+    """
+    GDPO Trainer - computes advantages per reward separately before combining.
+    References:
+    [1] GDPO: https://arxiv.org/abs/2601.05242
+    """
+    
+    def compute_advantages(self, samples: List[BaseSample], rewards: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Compute advantages using GDPO: normalize each reward group-wise first,
+        then combine with weights and apply batch normalization.
+        """
+        # 1. Gather rewards across processes
+        rewards = {key: torch.as_tensor(value).to(self.accelerator.device) for key, value in rewards.items()}
+        gathered_rewards = {
+            key: self.accelerator.gather(value).cpu().numpy()
+            for key, value in rewards.items()
+        }
+
+        # 2. Get group indices
+        unique_ids = torch.tensor([s.unique_id for s in samples], dtype=torch.int64, device=self.accelerator.device)
+        gathered_ids = self.accelerator.gather(unique_ids).cpu().numpy()
+        _unique_ids, group_indices = np.unique(gathered_ids, return_inverse=True)
+
+        # 3. Compute per-reward group-wise advantages
+        all_reward_advantages = []
+        for key, reward_array in gathered_rewards.items():
+            reward_adv = np.zeros_like(reward_array, dtype=np.float64)
+            
+            for group_id in np.unique(group_indices):
+                mask = (group_indices == group_id)
+                group_rewards = reward_array[mask]
+                
+                mean = np.mean(group_rewards)
+                std = max(np.std(group_rewards), 1e-6)
+                reward_adv[mask] = (group_rewards - mean) / std
+            
+            all_reward_advantages.append(reward_adv * self.reward_models[key].config.weight)
+
+        # 4. Combine and batch normalize
+        combined_advantages = np.sum(all_reward_advantages, axis=0)
+        bn_mean = np.mean(combined_advantages)
+        bn_std = max(np.std(combined_advantages), 1e-6)
+        advantages = (combined_advantages - bn_mean) / bn_std
+
+        # 5. Log statistics
+        # Log per-reward mean
+        _log_data = {
+            f'train/reward_{key}_mean': np.mean(value)
+            for key, value in gathered_rewards.items()
+        }
+        # Log per-reward std
+        _log_data.update({
+            f'train/reward_{key}_std': np.std(value)
+            for key, value in gathered_rewards.items()
+        })
+        # Log per-reward zero std ratio
+        _log_data.update({
+            f'train/reward_{key}_zero_std_ratio': compute_group_zero_std_ratio(arr, group_indices)
+            for key, arr in gathered_rewards.items()
+        })
+        # Log combined stats
+        _log_data.update({
+            'train/batch_norm_mean': bn_mean,
+            'train/batch_norm_std': bn_std,
+            'train/adv_max': np.max(advantages),
+            'train/adv_min': np.min(advantages),
+            'train/adv_abs_mean': np.mean(np.abs(advantages)),
+            'train_samples': samples[:30],
+        })
+        self.log_data(_log_data, step=self.step)
+
+        # 6. Scatter back to local process
+        advantages = torch.as_tensor(advantages).reshape(
+            self.accelerator.num_processes, -1, *advantages.shape[1:]
+        )[self.accelerator.process_index].to(self.accelerator.device)
+
+        return advantages
