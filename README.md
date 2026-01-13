@@ -55,6 +55,7 @@
 |----------------|----------------|
 | GRPO           | grpo           |
 | GRPO-Guard     | grpo-guard     |
+| GDPO           | gdpo           |
 | DiffusionNFT   | nft            |
 
 See [`Algorithm Guidance`](guidance/algorithms.md) for more information.
