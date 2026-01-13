@@ -10,10 +10,11 @@ from diffusers.utils.outputs import BaseOutput
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+
 from ..utils.base import to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 
-from .abc import SDESchedulerOutput
+from .abc import SDESchedulerOutput, SDESchedulerMixin
 
 logger = setup_logger(__name__)
 
@@ -66,7 +67,7 @@ class FlowMatchEulerDiscreteSDESchedulerOutput(SDESchedulerOutput):
     """
     pass
 
-class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
+class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler, SDESchedulerMixin):
     """
         A scheduler with noise level provided within the given steps
     """
@@ -102,13 +103,13 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         """Apply ODE Sampling with noise_level = 0"""
         self._is_eval = True
 
-    def train(self, *args, **kwargs):
+    def train(self, mode: bool = True):
         """Apply SDE Sampling"""
-        self._is_eval = False
+        self._is_eval = not mode
 
-    def rollout(self, *args, **kwargs):
+    def rollout(self, mode: bool = True):
         """Apply SDE rollout sampling"""
-        self.train(*args, **kwargs)
+        self.train(mode=mode)
 
     @property
     def current_sde_steps(self) -> torch.Tensor:
@@ -125,13 +126,13 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
     @property
     def train_timesteps(self) -> torch.Tensor:
         """
-            Returns timesteps that to train on.
+            Returns timestep **indices** that to train on.
         """
         return self.current_sde_steps
 
     def get_train_timesteps(self) -> torch.Tensor:
         """
-            Returns timesteps within the current window.
+            Returns timesteps [0, 1000] within the current window.
         """
         return self.timesteps[self.train_timesteps]
 
@@ -161,7 +162,7 @@ class FlowMatchEulerDiscreteSDEScheduler(FlowMatchEulerDiscreteScheduler):
         return torch.where(mask, self.noise_level, 0.0).to(timestep.dtype)
 
 
-    def get_noise_level_for_sigma(self, sigma) -> float:
+    def get_noise_level_for_sigma(self, sigma : float) -> float:
         """
             Return the noise level for a specific sigma.
         """

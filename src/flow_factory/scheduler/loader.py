@@ -6,6 +6,7 @@ Factory function to instantiate SDE schedulers from pipeline schedulers.
 from typing import Union
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 
+from .abc import SDESchedulerMixin
 from .registry import get_sde_scheduler_class
 from ..hparams import SchedulerArguments
 from ..utils.logger_utils import setup_logger
@@ -16,7 +17,7 @@ logger = setup_logger(__name__)
 def load_scheduler(
     pipeline_scheduler: SchedulerMixin,
     scheduler_args: SchedulerArguments,
-) -> SchedulerMixin:
+) -> SDESchedulerMixin:
     """
     Create an SDE scheduler from a pipeline scheduler and scheduler args.
     

@@ -44,7 +44,8 @@ from .samples import BaseSample
 from ..ema import EMAModuleWrapper
 from ..scheduler import (
     load_scheduler as _load_scheduler,
-    SDESchedulerOutput
+    SDESchedulerOutput,
+    SDESchedulerMixin,
 )
 from ..hparams import *
 from ..utils.base import filter_kwargs, is_tensor_list
@@ -123,7 +124,7 @@ class BaseAdapter(ABC):
         """Load and return the diffusion pipeline. Must be implemented by subclasses."""
         pass
 
-    def load_scheduler(self) -> SchedulerMixin:
+    def load_scheduler(self) -> SDESchedulerMixin:
         """Load and return the scheduler."""
         scheduler = _load_scheduler(
             pipeline_scheduler=self.pipeline.scheduler,
@@ -255,11 +256,11 @@ class BaseAdapter(ABC):
 
     # ------------------------------------ Scheduler ------------------------------------
     @property
-    def scheduler(self) -> SchedulerMixin:
+    def scheduler(self) -> SDESchedulerMixin:
         return self.pipeline.scheduler
 
     @scheduler.setter
-    def scheduler(self, scheduler: SchedulerMixin):
+    def scheduler(self, scheduler: Union[SDESchedulerMixin, SchedulerMixin]):
         self.pipeline.scheduler = scheduler
 
     # ---------------------------------- Device & Dtype ----------------------------------

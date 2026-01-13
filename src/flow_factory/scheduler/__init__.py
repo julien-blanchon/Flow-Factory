@@ -1,5 +1,8 @@
 # src/flow_factory/scheduler/__init__.py
-from .abc import SDESchedulerOutput
+from .abc import (
+    SDESchedulerOutput,
+    SDESchedulerMixin,
+)
 from .flow_match_euler_discrete import (
     FlowMatchEulerDiscreteSDEScheduler,
     FlowMatchEulerDiscreteSDESchedulerOutput,
@@ -18,6 +21,7 @@ from .registry import (
 
 __all__ = [
     "SDESchedulerOutput",
+    "SDESchedulerMixin",
 
     "FlowMatchEulerDiscreteSDEScheduler",
     "FlowMatchEulerDiscreteSDESchedulerOutput",

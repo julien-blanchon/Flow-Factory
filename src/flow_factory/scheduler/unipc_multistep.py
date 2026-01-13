@@ -11,7 +11,7 @@ from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepSchedu
 
 from ..utils.base import to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
-from .abc import SDESchedulerOutput
+from .abc import SDESchedulerOutput, SDESchedulerMixin
 
 logger = setup_logger(__name__)
 
@@ -19,7 +19,7 @@ logger = setup_logger(__name__)
 class UniPCMultistepSDESchedulerOutput(SDESchedulerOutput):
     pass
 
-class UniPCMultistepSDEScheduler(UniPCMultistepScheduler):
+class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
     """
     UniPC scheduler with SDE sampling support for RL fine-tuning.
     
@@ -68,13 +68,13 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler):
         """Apply ODE Sampling with noise_level = 0"""
         self._is_eval = True
 
-    def train(self, *args, **kwargs):
+    def train(self, mode: bool = True):
         """Apply SDE Sampling"""
-        self._is_eval = False
+        self._is_eval = not mode
 
-    def rollout(self, *args, **kwargs):
+    def rollout(self, mode: bool = True):
         """Apply SDE rollout sampling"""
-        self.train(*args, **kwargs)
+        self.train(mode=mode)
 
     @property
     def current_sde_steps(self) -> torch.Tensor:
