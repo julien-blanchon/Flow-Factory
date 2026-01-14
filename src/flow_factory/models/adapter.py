@@ -63,6 +63,12 @@ SAFE_DIFFUSION_WEIGHTS_INDEX_NAME = f"{SAFE_DIFFUSION_WEIGHTS_NAME}.index.json"
 
 logger = setup_logger(__name__)
 
+@dataclass
+class NamedParametersInfo:
+    """Metadata for named parameters snapshot."""
+    target_components: List[str]
+    ema_wrapper: EMAModuleWrapper
+
 class BaseAdapter(ABC):
     """
     Abstract Base Class for Flow-Factory models.
@@ -82,6 +88,7 @@ class BaseAdapter(ABC):
         self.training_args = config.training_args
         self.eval_args = config.eval_args
         self._mode : str = 'train' # ['train', 'eval', 'rollout']
+        self._named_parameters : Dict[str, NamedParametersInfo] = {}
 
         # Load pipeline and scheduler (delegated to subclasses)
         self.pipeline = self.load_pipeline()
@@ -329,6 +336,11 @@ class BaseAdapter(ABC):
         """Modules taht are requires for inference and forward"""
         return ['transformer', 'vae']
 
+    @property
+    def trainable_components(self) -> List[str]:
+        """Components with trainable parameters."""
+        return [comp for comp, mods in self.target_module_map.items() if mods]
+
     def _merge_module_pattern(
         self,
         current_pattern: Union[str, List[str], Set[str]],
@@ -449,7 +461,10 @@ class BaseAdapter(ABC):
 
     # ============================== Reference Parameters ==============================
     def _init_ref_parameters(self):
-        """Initialize reference parameters for target components."""
+        """
+            Initialize reference parameters for target components.
+            Used for KL regularization during training.
+        """
         if (
             self.training_args.kl_beta > 0.0
             and self.model_args.finetune_type in ['full']
@@ -496,7 +511,173 @@ class BaseAdapter(ABC):
                 yield
         else:
             yield
+
+
+    # ============================== Named Parameters Snapshot ==============================
+    """
+        These utilities help to snapshot and restore named parameters for target components.
+        NOTE: `use_ref_parameters` always refers to the original model weights before any fine-tuning.
+
+        For algorithms like DPO, GARDO, they requires to update reference model weights frequently.
+        So we need more flexible utilities to manage multiple named parameter snapshots.
+        The functions below help to store, use, update, and remove named parameter snapshots.
+    """
+    def _get_component_parameters(
+        self, 
+        target_modules: List[str]
+    ) -> List[torch.nn.Parameter]:
+        """Get trainable parameters from specified components."""
+        params = []
+        for comp_name in target_modules:
+            if hasattr(self, comp_name):
+                component = getattr(self, comp_name)
+                params.extend(p for p in component.parameters() if p.requires_grad)
+            else:
+                logger.warning(f"Component '{comp_name}' not found in the model. Skipping.")
+        return params
     
+    def add_named_parameters(
+        self,
+        name: str,
+        target_components: Optional[Union[str, List[str]]] = None,
+        device: Optional[Union[torch.device, str]] = None,
+        overwrite: bool = True,
+    ) -> None:
+        """
+        Store current trainable parameters snapshot under a name.
+        
+        Args:
+            name: Identifier for this parameter snapshot
+            target_modules: Component names to store. Defaults to components with trainable params.
+            device: Storage device (defaults to 'cpu')
+            overwrite: Whether to overwrite existing snapshot
+        """
+        if name in self._named_parameters and not overwrite:
+            raise KeyError(f"Named parameters '{name}' exists. Use overwrite=True.")
+        
+        # Normalize target_modules - filter only those with trainable params
+        if target_components is None:
+            target_components = [k for k, v in self.target_module_map.items() if v]
+        elif isinstance(target_components, str):
+            target_components = [target_components]
+        
+        # Validate
+        invalid = set(target_components) - set(self.target_module_map.keys())
+        if invalid:
+            raise ValueError(f"Invalid target_modules: {invalid}. Valid: {list(self.target_module_map.keys())}")
+        
+        device = torch.device(device) if device else torch.device('cpu')
+        params = self._get_component_parameters(target_components)
+        
+        if not params:
+            raise ValueError(f"No trainable parameters found in {target_components}")
+        
+        self._named_parameters[name] = NamedParametersInfo(
+            target_components=target_components,
+            ema_wrapper=EMAModuleWrapper(
+                parameters=params,
+                decay=0.0,
+                update_step_interval=0,
+                device=device,
+            ),
+        )
+        logger.info(f"Stored named parameters '{name}' for {target_components} on {device}")
+    
+    @contextmanager
+    def use_named_parameters(self, name: str):
+        """
+        Context manager to temporarily use named parameters.
+        
+        Args:
+            name: Name of stored parameters snapshot
+            
+        Usage:
+            adapter.add_named_parameters('init')
+            # ... training ...
+            with adapter.use_named_parameters('init'):
+                evaluate(model)  # Uses stored weights
+            # Current weights restored
+        """
+        if name not in self._named_parameters:
+            raise KeyError(f"'{name}' not found. Available: {self.list_named_parameters()}")
+        
+        info = self._named_parameters[name]
+        params = self._get_component_parameters(info.target_components)
+        
+        with info.ema_wrapper.use_ema_parameters(params):
+            yield
+
+    def update_named_parameters(
+        self,
+        name: str,
+        target_components: Optional[Union[str, List[str]]] = None,
+        new_parameters: Optional[Iterable[torch.nn.Parameter]] = None,
+    ) -> None:
+        """
+        Update existing named parameters with specified or current values.
+        
+        Args:
+            name: Name of snapshot to update
+            target_modules: Components to update. Defaults to originally stored components.
+            new_parameters: Parameters to copy from. Defaults to current model parameters.
+        """
+        if name not in self._named_parameters:
+            raise KeyError(f"'{name}' not found.")
+        
+        info = self._named_parameters[name]
+        
+        # Resolve target_modules
+        if target_components is None:
+            target_components = info.target_components
+        elif isinstance(target_components, str):
+            target_components = [target_components]
+        
+        if not set(target_components).issubset(set(info.target_components)):
+            raise ValueError(f"Must be subset of original: {info.target_components}")
+        
+        # Resolve parameters
+        if new_parameters is None:
+            new_parameters = self._get_component_parameters(target_components)
+        else:
+            new_parameters = list(new_parameters)
+        
+        # Validate param count
+        if len(new_parameters) != len(info.ema_wrapper.ema_parameters):
+            raise ValueError(
+                f"Parameter count mismatch: got {len(new_parameters)}, "
+                f"expected {len(info.ema_wrapper.ema_parameters)}"
+            )
+        
+        # Update
+        with torch.no_grad():
+            for ema_param, param in zip(info.ema_wrapper.ema_parameters, new_parameters, strict=True):
+                ema_param.data.copy_(param.detach().to(ema_param.device))
+        
+        logger.info(f"Updated named parameters '{name}'")
+
+    def remove_named_parameters(self, name: str) -> None:
+        """Remove named parameters."""
+        if name not in self._named_parameters:
+            raise KeyError(f"'{name}' not found.")
+        del self._named_parameters[name]
+        logger.info(f"Removed named parameters '{name}'")
+
+    def list_named_parameters(self) -> List[str]:
+        """List all stored parameter names."""
+        return list(self._named_parameters.keys())
+    
+    def get_named_parameters_info(self, name: str) -> Dict[str, Any]:
+        """Get info about a named parameter snapshot."""
+        if name not in self._named_parameters:
+            raise KeyError(f"'{name}' not found.")
+        info = self._named_parameters[name]
+        return {
+            "name": name,
+            "target_components": info.target_components,
+            "num_params": len(info.ema_wrapper.ema_parameters),
+            "device": str(info.ema_wrapper.device),
+        }
+
     # ============================== Gradient Checkpointing ==============================
     def enable_gradient_checkpointing(self):
         """Enable gradient checkpointing for target components."""
