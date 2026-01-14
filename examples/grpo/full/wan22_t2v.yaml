@@ -28,7 +28,7 @@ model:
   finetune_type: 'lora' # Options: full, lora
   lora_rank : 64
   lora_alpha : 128
-  target_components: ['transformer', 'transformer_2'] # Options: transformer, transformer_2, or ['transformer', 'transformer_2']
+  target_components: 'transformer' # Options: transformer, transformer_2, or ['transformer', 'transformer_2']
   # For Wan2.2, you can specify something like ['transformer.to_k', 'transformer_2.to_q'] to train different modules for different components.
   # Even if you only want to train one transformer at the time, a trick to save memory is that
   # with `fsdp_full_shard`, set `target_components` to `['transformer', 'transformer_2']` and target_modules to `transformer.default`
@@ -53,7 +53,7 @@ train:
 
   # Video settings
   resolution: 256  # Can be int or [height, width]
-  num_frames: 41 # (F - 1) mod 4 == 0
+  num_frames: 21 # (F - 1) mod 4 == 0
   
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device

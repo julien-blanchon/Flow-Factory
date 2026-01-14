@@ -1,10 +1,6 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-# Use FSDP to shard the gradient and optimizer.
-# If you want to further shard the model, use `FSDP full shard strategy` to train two transformers simultaneously,
-# i.e., `config/accelerate_configs/fsdp_full_shard.yaml`
-# NOTE: Deepspeed and FSDP2 do not support sharding two models simultaneously yet.
-config_file: config/accelerate_configs/fsdp_full_shard.yaml
+config_file: config/accelerate_configs/fsdp2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
 mixed_precision: "bf16"  # Options: no, fp16, bf16
@@ -15,7 +11,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/pickscore"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
@@ -25,18 +21,10 @@ data:
 
 # Model Configuration
 model:
-  finetune_type: 'lora' # Options: full, lora
-  lora_rank : 64
-  lora_alpha : 128
-  target_components: ['transformer', 'transformer_2'] # Options: transformer, transformer_2, or ['transformer', 'transformer_2']
-  # For Wan2.2, you can specify something like ['transformer.to_k', 'transformer_2.to_q'] to train different modules for different components.
-  # Even if you only want to train one transformer at the time, a trick to save memory is that
-  # with `fsdp_full_shard`, set `target_components` to `['transformer', 'transformer_2']` and target_modules to `transformer.default`
-  # both `transformer` and `transformer_2` will be shared among GPUs to save memory.
-  # But pay attention to the `boundary_ratio` that used in Wan2.2, before/after which different transformer is used and therefore needed for backward.
-  target_modules: "default"
-  model_name_or_path: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"  # Wan-AI/Wan2.1-T2V-14B-Diffusers / Wan-AI/Wan2.2-T2V-A14B-Diffusers
-  model_type: "wan2_t2v"  # wan2_t2v, wan2_i2v, wan2_v2v
+  finetune_type: 'full' # Options: full, lora
+  target_modules: "default" # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"  # HuggingFace model ID or local path
+  model_type: "flux1-kontext"  # Options: flux1-kontext
   resume_path: null # Path to load previous checkpoint/lora adapter
   resume_training_state: false # Whether to resume training state, only effective when resume_path is a directory with full checkpoint
 
@@ -49,11 +37,11 @@ log:
 train:
   # Training settings
   trainer_type: 'grpo'
-  enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
-  # Video settings
-  resolution: 256  # Can be int or [height, width]
-  num_frames: 41 # (F - 1) mod 4 == 0
+  # Image settings
+  resolution: 384  # Can be int or [height, width]
+  condition_image_size: 384  # Condition image size for kontext model
   
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
@@ -67,13 +55,18 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_beta: 0.04 # KL divergence beta - 0 to disable and save memory
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+
   # Denoising process
-  num_inference_steps: 10  # Number of timesteps
-  guidance_scale: 5.0  # Guidance scale for sampling
+  num_inference_steps: 8  # Number of timesteps
+  guidance_scale: 2.5  # Guidance scale for sampling
   
   # Optimization
   seed: 42  # Random seed
-  learning_rate: 1.0e-4  # Initial learning rate
+  learning_rate: 1.0e-5  # Initial learning rate
   adam_weight_decay: 1.0e-4  # AdamW weight decay
   adam_betas: [0.9, 0.999]  # AdamW betas
   adam_epsilon: 1.0e-8  # AdamW epsilon
@@ -89,36 +82,29 @@ scheduler:
   num_train_steps: 1  # Number of noise steps
   train_steps: [1, 2, 3]  # Custom noise window, noise steps are randomly selected from this list during training
   seed: 42  # Scheduler seed (for noise step selection)
-  flow_shift: 3.0 # 5.0 for 720P, 3.0 for 480P (from WanPipeline docstring)
 
 # Evaluation settings
 eval:
-  resolution: 480  # Evaluation resolution
-  num_frames: 81 # Evaluation frames
-  per_device_batch_size: 1  # Eval batch size
+  resolution: 512  # Evaluation resolution
+  condition_image_size: 512  # Condition image size for kontext model
+
+  per_device_batch_size: 4  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
-  guidance_scale: 5.0  # Guidance scale for sampling
-  num_inference_steps: 28  # Number of eval timesteps
+  guidance_scale: 2.5  # Guidance scale for sampling
+  num_inference_steps: 20  # Number of eval timesteps
   eval_freq: 20  # Eval frequency in epochs (0 to disable)
 
 # Reward Model Configuration
 rewards:
-  - name: "text_alignment" # Alias for this reward model
-    reward_model: "CLIP" # Reward model type or a path like 'my_package.rewards.CustomReward'
-    weight: 1.0  # Weight of this reward model
-    batch_size: 16
-    device: "cuda"
-    dtype: bfloat16
-  - name: "pick_score"
-    reward_model: "PickScore"
-    weight: 0.5  # Weight of this reward model
-    batch_size: 16
-    device: "cuda"
-    dtype: bfloat16
+  name: "pick_score"
+  reward_model: "PickScore"
+  batch_size: 16
+  device: "cuda"
+  dtype: bfloat16
 
 # Optional Evaluation Reward Models
 # eval_rewards:
-#   - name: "text_alignment_2"
+#   - name: "text_alignment"
 #     reward_model: "CLIP"
 #     batch_size: 16
 #     device: "cuda"

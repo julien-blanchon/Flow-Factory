@@ -3,7 +3,7 @@ launcher: "accelerate"  # Options: accelerate
 config_file: config/accelerate_configs/fsdp2.yaml  # Path to distributed config file (optional)
 num_processes: 8  # Number of processes to launch (overrides config file)
 main_process_port: 29500
-mixed_precision: "no"  # Options: no, fp16, bf16
+mixed_precision: "bf16"  # Options: no, fp16, bf16
 
 run_name: null  # Run name (auto: {model_type}_{finetune_type}_{timestamp})
 project: "Flow-Factory"  # Project name for logging
@@ -37,6 +37,7 @@ log:
 train:
   # Training settings
   trainer_type: 'grpo'
+  enable_gradient_checkpointing: false  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
   resolution: 512  # Can be int or [height, width]
@@ -53,6 +54,11 @@ train:
   adv_clip_range: 5.0  # Advantage clipping range
   max_grad_norm: 1.0  # Max gradient norm for clipping
   
+  # KL div
+  kl_type: 'x-based' # Options: 'x-based', 'normal-based'
+  kl_beta: 0.04 # KL divergence beta - 0 to disable and save memory
+  ref_param_device: 'same_as_model' # Options: cpu, same_as_model
+
   # Denoising process
   num_inference_steps: 10  # Number of timesteps
   guidance_scale: 3.5  # Guidance scale for sampling

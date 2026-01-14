@@ -1,6 +1,5 @@
 # Environment Configuration
 launcher: "accelerate"  # Options: accelerate
-
 # Use FSDP to shard the gradient and optimizer.
 # If you want to further shard the model, use `FSDP full shard strategy` to train two transformers simultaneously,
 # i.e., `config/accelerate_configs/fsdp_full_shard.yaml`

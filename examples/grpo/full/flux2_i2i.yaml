@@ -11,7 +11,7 @@ logging_backend: "wandb"  # Options: wandb, swanlab, none
 
 # Data Configuration
 data:
-  dataset_dir: "dataset/t2is"  # Path to dataset folder
+  dataset_dir: "dataset/sharegpt4o_image_mini"  # Path to dataset folder
   preprocessing_batch_size: 8  # Batch size for preprocessing
   dataloader_num_workers: 16  # Number of workers for DataLoader
   enable_preprocess: true  # Enable dataset preprocessing
@@ -22,7 +22,10 @@ data:
 # Model Configuration
 model:
   finetune_type: 'full' # Options: full, lora
-  target_modules: ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0"] # Options: all, default, or list of module names like ["to_k", "to_q", "to_v", "to_out.0"]
+  # Since FLUX2 has a 30B transformer, if you want to fine-tune it with full-parameters, be careful!
+  # Set `default` usually includes all attention blocks and FFNs.
+  # Alternatively, you can set ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0"] to train only attention layers.
+  target_modules: ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0"]
   model_name_or_path: "black-forest-labs/FLUX.2-dev"  # HuggingFace model ID or local path
   model_type: "flux2"  # Options: flux1, flux1-kontext, flux2, qwenimage, qwenimage-edit
   resume_path: null # Path to load previous checkpoint/lora adapter
@@ -40,8 +43,9 @@ train:
   enable_gradient_checkpointing: true  # Enable gradient checkpointing to save memory with extra compute
 
   # Image settings
-  resolution: 512  # Can be int or [height, width]
-  
+  resolution: 384  # Can be int or [height, width]
+  condition_image_size: [384, 384] # Max condition image resolution, int or [height, width]
+
   # Batch and sampling
   per_device_batch_size: 1  # Batch size per device
   group_size: 16  # Group size for GRPO sampling
@@ -84,7 +88,8 @@ scheduler:
 
 # Evaluation settings
 eval:
-  resolution: 1024  # Evaluation resolution
+  resolution: 512  # Evaluation resolution
+  condition_image_size: [512, 512] # Max condition image resolution, int or [height, width]
   per_device_batch_size: 1  # Eval batch size
   seed: 42  # Eval seed (defaults to training seed)
   guidance_scale: 4  # Guidance scale for sampling
@@ -93,18 +98,12 @@ eval:
 
 # Reward Model Configuration
 rewards:
-  - name: "text_alignment" # Alias for this reward model
-    reward_model: "CLIP" # Reward model type or a path like 'my_package.rewards.CustomReward'
-    weight: 1.0  # Weight of this reward model
-    batch_size: 16
-    device: "cuda"
-    dtype: bfloat16
-  - name: "pick_score"
-    reward_model: "PickScore"
-    weight: 0.5  # Weight of this reward model
-    batch_size: 16
-    device: "cuda"
-    dtype: bfloat16
+  name: "pick_score"
+  reward_model: "PickScore"
+  weight: 0.5  # Weight of this reward model
+  batch_size: 16
+  device: "cuda"
+  dtype: bfloat16
 
 # Optional Evaluation Reward Models
 # eval_rewards:
